@@ -119,9 +119,21 @@ def ingest_excel_files(folder_filter: str = None) -> dict:
                 errors.append(xlsx.name)
 
     if mapping_root.exists():
-        for subfolder in mapping_root.iterdir():
-            if subfolder.is_dir():
-                process_folder(subfolder, subfolder.name)
+        for xlsx in mapping_root.rglob("*.xlsx"):
+            if folder_filter and folder_filter.lower() not in str(xlsx).lower():
+                continue
+            folder_name = xlsx.parent.name if xlsx.parent != mapping_root else "mapping"
+            existing = registry_index.get(str(xlsx))
+            if existing and existing.get("file_mtime") == xlsx.stat().st_mtime:
+                _ingest_file(xlsx, folder_name)
+                skipped.append(xlsx.name)
+                continue
+            entry = _ingest_file(xlsx, folder_name)
+            if entry:
+                registry_index[str(xlsx)] = entry
+                loaded.append(xlsx.name)
+            else:
+                errors.append(xlsx.name)
 
     process_folder(master_root, "master")
 
