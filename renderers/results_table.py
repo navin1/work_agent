@@ -5,6 +5,47 @@ import pandas as pd
 import streamlit as st
 
 
+def render_dag_list(raw_json: str) -> None:
+    try:
+        data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+    except Exception:
+        st.error("Could not parse DAG list.")
+        return
+
+    if "error" in data:
+        st.error(f"DAG list error: {data['error']}")
+        return
+
+    dags = data.get("dags", [])
+    env = data.get("composer_env", "")
+    if not dags:
+        st.info(f"No DAGs found in **{env}**.")
+        return
+
+    rows = [
+        {
+            "DAG ID": d.get("dag_id", ""),
+            "Schedule": d.get("schedule") or "—",
+            "Paused": "⏸ Yes" if d.get("is_paused") else "▶ No",
+            "Last Run": d.get("last_run_time", "") or "—",
+            "Tags": ", ".join(d.get("tags") or []) or "—",
+            "Subfolder": d.get("subfolder", "") or "—",
+        }
+        for d in dags
+    ]
+    df = pd.DataFrame(rows)
+
+    st.caption(f"**{len(dags)}** DAGs in **{env}**")
+    st.dataframe(df, hide_index=True, use_container_width=True)
+
+    col1, _ = st.columns([1, 5])
+    with col1:
+        buf = io.StringIO()
+        df.to_csv(buf, index=False)
+        st.download_button("⬇ CSV", buf.getvalue(), f"{env}_dags.csv",
+                           mime="text/csv", key=f"dags_csv_{id(raw_json)}")
+
+
 def render(raw_json: str, agent=None) -> None:
     try:
         data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json

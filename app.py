@@ -297,6 +297,9 @@ def dispatch_renderers(agent_output: dict) -> None:
     if "trace_from_excel" in tools_called:
         _lg.render_lineage_graph(tools_called["trace_from_excel"])
 
+    if "list_dags" in tools_called:
+        _rt.render_dag_list(tools_called["list_dags"])
+
     if "query_bigquery" in tools_called or "query_excel_data" in tools_called:
         source = "query_bigquery" if "query_bigquery" in tools_called else "query_excel_data"
         _rt.render(tools_called[source], agent=st.session_state.agent)
