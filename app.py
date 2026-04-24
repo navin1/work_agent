@@ -84,46 +84,61 @@ if "js_registered" not in st.session_state:
 (function attach() {
   var pd = window.parent.document;
   if (!pd.body) { setTimeout(attach, 100); return; }
+  if (pd.getElementById('_app_events_script')) return;
 
-  function hideNativeBtn() {
-    var btns = Array.from(pd.querySelectorAll('.stButton button'));
-    var btn = btns.find(function(b) { return b.textContent.trim().includes('Run Book'); });
-    if (btn) {
-      var container = btn.closest('[data-testid="stElementContainer"]');
-      if (container) container.style.display = 'none';
+  var script = pd.createElement('script');
+  script.id = '_app_events_script';
+  script.text = `
+    function hideNativeBtn() {
+      var container = document.querySelector('.st-key-runbook_btn');
+      if (!container) {
+        var btns = Array.from(document.querySelectorAll('button'));
+        var btn = btns.find(function(b) { return b.textContent && b.textContent.includes('Run Book') && b.id !== '_runbook_btn'; });
+        if (btn) container = btn.closest('[data-testid="stElementContainer"]');
+      }
+      if (container && container.style.opacity !== '0') {
+        container.style.position = 'absolute';
+        container.style.width = '0px';
+        container.style.height = '0px';
+        container.style.overflow = 'hidden';
+        container.style.opacity = '0';
+      }
     }
-  }
-  hideNativeBtn();
-  if (!pd.body.dataset.hideObserver) {
-    pd.body.dataset.hideObserver = '1';
-    new MutationObserver(hideNativeBtn).observe(pd.body, { childList: true, subtree: true });
-  }
+    hideNativeBtn();
+    if (!document.body.dataset.hideObserver) {
+      document.body.dataset.hideObserver = '1';
+      new MutationObserver(hideNativeBtn).observe(document.body, { childList: true, subtree: true });
+    }
 
-  if (pd.body.dataset.appListeners) return;
-  pd.body.dataset.appListeners = '1';
-
-  pd.body.addEventListener('click', function(e) {
-    if (e.target.closest('#_hbtn')) {
-      var closeBtn = pd.querySelector('[data-testid="stSidebarCollapseButton"] button')
-                  || pd.querySelector('[data-testid="stSidebarCollapseButton"]');
-      var openBtn  = pd.querySelector('[data-testid="collapsedControl"] button')
-                  || pd.querySelector('[data-testid="collapsedControl"]')
-                  || pd.querySelector('[data-testid="stExpandSidebarButton"]');
-      var target = closeBtn || openBtn;
-      if (target) target.click();
-      return;
-    }
-    if (e.target.closest('#_runbook_btn')) {
-      var rb = Array.from(pd.querySelectorAll('.stButton button')).find(function(b) { return b.innerText.includes('Run Book'); });
-      if (rb) rb.click();
-      return;
-    }
-  }, true);
+    document.body.addEventListener('click', function(e) {
+      if (e.target.closest('#_hbtn')) {
+        e.preventDefault();
+        e.stopPropagation();
+        var closeBtn = document.querySelector('[data-testid="stSidebarCollapseButton"] button') || document.querySelector('[data-testid="stSidebarCollapseButton"]');
+        var openBtn  = document.querySelector('[data-testid="collapsedControl"] button') || document.querySelector('[data-testid="collapsedControl"]') || document.querySelector('[data-testid="stSidebarExpandButton"] button') || document.querySelector('[data-testid="stSidebarExpandButton"]') || document.querySelector('[data-testid="stExpandSidebarButton"]');
+        var target = closeBtn || openBtn;
+        if (target) target.click();
+        return;
+      }
+      if (e.target.closest('#_runbook_btn')) {
+        e.preventDefault();
+        e.stopPropagation();
+        var rb = document.querySelector('.st-key-runbook_btn button');
+        if (!rb) {
+          var btns = Array.from(document.querySelectorAll('button'));
+          rb = btns.find(function(b) { return b.textContent && b.textContent.includes('Run Book') && b.id !== '_runbook_btn'; });
+        }
+        if (rb) rb.click();
+        return;
+      }
+    }, true);
+  `;
+  pd.head.appendChild(script);
 })();
 </script>
 """
-    _js_src = "data:text/html;base64," + base64.b64encode(_js_html.encode()).decode()
-    st.iframe(_js_src, height=1)
+    import streamlit.components.v1 as components
+    components.html(_js_html, height=0, width=0)
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
