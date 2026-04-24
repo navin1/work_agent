@@ -1,6 +1,6 @@
 """LangChain agent builder with memory and streaming."""
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.agents import create_agent
+from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -17,10 +17,10 @@ def build_agent():
         model=config.AGENT_MODEL,
         temperature=0,
     )
-    return create_agent(
+    return create_react_agent(
         model=llm,
         tools=ALL_TOOLS,
-        system_prompt=build_system_prompt(),
+        prompt=build_system_prompt(),
         checkpointer=MemorySaver(),
     )
 
