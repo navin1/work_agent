@@ -35,8 +35,35 @@ def render_dag_list(raw_json: str) -> None:
     ]
     df = pd.DataFrame(rows)
 
-    st.caption(f"**{len(dags)}** DAGs in **{env}**")
-    st.dataframe(df, hide_index=True, use_container_width=True)
+    table_key = f"dag_table_{id(raw_json)}"
+    st.caption(f"**{len(dags)}** DAGs in **{env}** — click a row to inspect")
+    selection = st.dataframe(
+        df,
+        hide_index=True,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key=table_key,
+    )
+
+    selected_rows = (selection.selection.rows
+                     if selection and hasattr(selection, "selection")
+                     else [])
+    if selected_rows:
+        dag_id = dags[selected_rows[0]].get("dag_id", "")
+        col_a, col_b, col_c = st.columns([2, 2, 4])
+        with col_a:
+            if st.button("🔍 DAG Details", key=f"dag_det_{dag_id}_{id(raw_json)}"):
+                st.session_state.chat_prefill = f"get dag details for {dag_id} in {env}"
+                st.rerun()
+        with col_b:
+            if st.button("📊 Run History", key=f"dag_hist_{dag_id}_{id(raw_json)}"):
+                st.session_state.chat_prefill = f"show run history for {dag_id} in {env}"
+                st.rerun()
+        with col_c:
+            if st.button("🗺 Task Graph", key=f"dag_graph_{dag_id}_{id(raw_json)}"):
+                st.session_state.chat_prefill = f"show task graph for {dag_id} in {env}"
+                st.rerun()
 
     col1, _ = st.columns([1, 5])
     with col1:
