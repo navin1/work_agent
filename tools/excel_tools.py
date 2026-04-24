@@ -378,6 +378,7 @@ def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
             "source_folder": entry.get("source_folder"),
             "bq_table": bq_table,
             "dag_names": dag_names,
+            "composer_env": "",
             "airflow_jobs": [],
             "dag_details": [],
             "note": None,
@@ -403,6 +404,8 @@ def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
                 "Pass composer_env parameter or configure COMPOSER_ENVS in .env"
             )
             return json.dumps(result)
+
+        result["composer_env"] = env
 
         # For each DAG: get recent jobs + task graph + rendered SQL
         from tools.composer_tools import _get

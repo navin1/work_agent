@@ -98,11 +98,12 @@ def _build_graph(data: dict):
     edges: list = []
     content_map: dict = {}
 
-    excel_file  = data.get("excel_file", "unknown.xlsx")
-    bq_table    = data.get("bq_table", "")
-    dag_names   = data.get("dag_names", [])
-    dag_details = data.get("dag_details", [])
-    table_name  = data.get("table_name", excel_file)
+    excel_file   = data.get("excel_file", "unknown.xlsx")
+    bq_table     = data.get("bq_table", "")
+    dag_names    = data.get("dag_names", [])
+    dag_details  = data.get("dag_details", [])
+    table_name   = data.get("table_name", excel_file)
+    composer_env = data.get("composer_env", "")
 
     dag_detail_map = {d["dag_id"]: d for d in dag_details}
 
@@ -237,6 +238,7 @@ def _build_graph(data: dict):
                 "type":             "task",
                 "dag_id":           dag_id,
                 "task_id":          task_id,
+                "composer_env":     composer_env,
                 "operator":         task.get("operator", ""),
                 "state":            task_state,
                 "duration_seconds": task.get("duration_seconds"),
@@ -328,7 +330,15 @@ def _render_content_panel(info: dict) -> None:
             h = _sql_height(info["sql"])
             components.html(monaco.editor(info["sql"], language="sql", height=h), height=h + 20)
         else:
-            st.info("No SQL configured for this task.")
+            st.info("SQL not found in trace — click below to fetch it on demand.")
+            env  = info.get("composer_env", "")
+            did  = info["dag_id"]
+            tid  = info["task_id"]
+            if env and st.button("⬇ Fetch SQL", key=f"fetch_sql_{did}__{tid}"):
+                st.session_state.chat_prefill = (
+                    f"get task sql for {tid} in dag {did} in {env}"
+                )
+                st.rerun()
 
     elif node_type == "sql":
         st.markdown(f"#### 📝 {info['task_id']}.sql")
