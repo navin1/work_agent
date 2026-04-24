@@ -9,6 +9,7 @@ import streamlit.components.v1 as components
 from core import monaco
 
 _IMPACT_BADGES = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}
+_render_count = 0
 
 
 def render_optimised_file(raw_json: str) -> None:
@@ -18,6 +19,10 @@ def render_optimised_file(raw_json: str) -> None:
     except Exception:
         st.error("Could not parse optimisation result.")
         return
+
+    global _render_count
+    _render_count += 1
+    uid = str(_render_count)
 
     if "error" in data:
         st.error(f"Optimisation error: {data['error']}")
@@ -55,6 +60,7 @@ def render_optimised_file(raw_json: str) -> None:
             file_name=dl_name,
             mime="text/plain",
             type="primary",
+            key=f"dl_opt_file_{uid}",
         )
 
     tab1, tab2, tab3 = st.tabs(["Diff", "Changes", "Side-by-Side"])
@@ -111,6 +117,10 @@ def render_optimised_file(raw_json: str) -> None:
 
 def render_optimised_folder(raw_json: str) -> None:
     """Render optimise_folder result: summary metrics, zip download, per-file expandable panels."""
+    global _render_count
+    _render_count += 1
+    uid = str(_render_count)
+
     try:
         data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
     except Exception:
@@ -140,6 +150,7 @@ def render_optimised_folder(raw_json: str) -> None:
             file_name=Path(export_path).name,
             mime="application/zip",
             type="primary",
+            key=f"dl_opt_folder_{uid}",
         )
 
     for r in results:

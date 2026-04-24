@@ -21,7 +21,14 @@ _STATUS_COLORS = {
 }
 
 
+_render_count = 0
+
+
 def render(raw_json: str, agent=None) -> None:
+    global _render_count
+    _render_count += 1
+    uid = str(_render_count)
+
     try:
         data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
     except Exception:
@@ -59,7 +66,7 @@ def render(raw_json: str, agent=None) -> None:
     if results:
         df = pd.DataFrame(results)
         status_opts = ["All"] + sorted(df["status"].unique().tolist())
-        chosen = st.selectbox("Filter by status", status_opts, key="recon_filter")
+        chosen = st.selectbox("Filter by status", status_opts, key=f"recon_filter_{uid}")
         if chosen != "All":
             df_show = df[df["status"] == chosen]
         else:
@@ -112,8 +119,8 @@ def render(raw_json: str, agent=None) -> None:
                         st.write(detail_raw)
 
                 if not row.get("acknowledged"):
-                    reason = st.text_input("Acknowledge reason", key=f"ack_reason_{name}")
-                    if st.button("✓ Acknowledge", key=f"ack_{name}") and reason:
+                    reason = st.text_input("Acknowledge reason", key=f"ack_reason_{uid}_{name}")
+                    if st.button("✓ Acknowledge", key=f"ack_{uid}_{name}") and reason:
                         from tools.reconciliation_tools import acknowledge_reconciliation_finding
                         acknowledge_reconciliation_finding.run({"logical_name": name, "reason": reason})
                         st.success("Acknowledged.")

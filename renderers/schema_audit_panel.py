@@ -1,9 +1,10 @@
 """Renderer for run_schema_audit tool output."""
-import hashlib
 import json
 from pathlib import Path
 
 import streamlit as st
+
+_render_count = 0
 
 
 _STATUS_COLORS = {
@@ -86,13 +87,15 @@ def _render_batch(label: str, data: dict, uid: str) -> None:
 
 
 def render_schema_audit(raw_json: str) -> None:
+    global _render_count
+    _render_count += 1
+    uid = str(_render_count)
+
     try:
         data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
     except Exception:
         st.error("Schema audit: could not parse result")
         return
-
-    uid = hashlib.md5(str(raw_json).encode()).hexdigest()[:8]
 
     if "error" in data:
         st.error(f"Schema audit failed: {data['error']}")
