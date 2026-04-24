@@ -328,6 +328,9 @@ def dispatch_renderers(agent_output: dict) -> None:
     if "optimise_folder" in tools_called:
         _ofv.render_optimised_folder(tools_called["optimise_folder"])
 
+    if "read_file" in tools_called:
+        _ofv.render_file_content(tools_called["read_file"])
+
     if "compare_git_gcs" in tools_called:
         _ofv.render_git_gcs_diff(tools_called["compare_git_gcs"])
 

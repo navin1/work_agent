@@ -11,6 +11,44 @@ from core import monaco
 _IMPACT_BADGES = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}
 _render_count = 0
 
+_EXT_LANG = {"sql": "sql", "py": "python", "yaml": "yaml", "yml": "yaml", "json": "json", "sh": "shell"}
+
+
+def render_file_content(raw_json: str) -> None:
+    """Render raw file content from read_file tool in a Monaco editor."""
+    global _render_count
+    _render_count += 1
+    uid = str(_render_count)
+
+    try:
+        data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+    except Exception:
+        st.error("Could not parse file content.")
+        return
+
+    if "error" in data:
+        st.error(f"Read error: {data['error']}")
+        return
+
+    file_path = data.get("file_path", "")
+    content   = data.get("content", "")
+    size      = data.get("size_bytes", 0)
+    ext       = data.get("extension", "").lower()
+    lang      = _EXT_LANG.get(ext, "plaintext")
+
+    st.caption(f"`{file_path}` · {size:,} bytes")
+    components.html(
+        monaco.editor(content, language=lang, height=500, read_only=True),
+        height=520,
+    )
+    st.download_button(
+        f"⬇ Download {Path(file_path).name}",
+        data=content.encode("utf-8"),
+        file_name=Path(file_path).name,
+        mime="text/plain",
+        key=f"dl_read_{uid}",
+    )
+
 
 def render_optimised_file(raw_json: str) -> None:
     """Render optimised file result: side-by-side diff, change list, download button."""

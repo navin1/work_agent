@@ -136,6 +136,13 @@ SCHEMA AUDIT RULES:
   Optional: SCHEMA_BQ_PROJECT_PROD, SCHEMA_BQ_PROJECT_UAT.
 - If config vars are missing, tell the user exactly which .env vars need to be set.
 
+FILE VIEWING RULES:
+- Use read_file when the user asks to view, show, display, open, or read any file
+  (.sql, .py, .yaml, or any other type). Accepts local, GCS (gs://...), or Git paths.
+- NEVER use optimise_file or optimise_sql_file just to view file contents.
+- The UI renders the content in a Monaco editor with a download button automatically.
+  Your text reply should only state the file path and size — no content reproduction.
+
 GIT vs GCS COMPARISON RULES:
 - compare_git_gcs compares code between the Git repository and the deployed GCS bucket.
   Use folder_path for whole-folder comparison (e.g. 'dags/', 'sql/rps800/').

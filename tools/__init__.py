@@ -58,6 +58,7 @@ from tools.user_tools import (
     get_favorites,
 )
 from tools.code_tools import (
+    read_file,
     compare_git_gcs,
     optimise_file,
     optimise_folder,
@@ -106,7 +107,8 @@ ALL_TOOLS = [
     run_reconciliation,
     get_reconciliation_detail,
     acknowledge_reconciliation_finding,
-    # Code: Git vs GCS + file/folder optimisation
+    # Code: read, Git vs GCS comparison, file/folder optimisation
+    read_file,
     compare_git_gcs,
     optimise_file,
     optimise_folder,

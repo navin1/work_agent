@@ -306,6 +306,32 @@ def _optimise_single(
 # ── Tool 1: compare Git vs GCS ────────────────────────────────────────────────
 
 @tool
+def read_file(file_path: str) -> str:
+    """Read and return the raw content of any file.
+
+    Accepts local paths (absolute or ./relative), GCS paths (gs://bucket/path),
+    or Git paths (relative path within the configured repo, e.g. sql/rps800/load.sql).
+
+    Use this when the user wants to VIEW, SHOW, DISPLAY, or READ a file without
+    modifying it. Never use optimise_file or optimise_sql_file just to read content.
+
+    Returns JSON with: file_path, content, size_bytes, extension."""
+    try:
+        content, resolved_path = _fetch_file(file_path)
+        if content is None:
+            return safe_json({"error": f"File not found: {file_path}"})
+        ext = Path(resolved_path).suffix.lstrip(".")
+        return safe_json({
+            "file_path": resolved_path,
+            "content": content,
+            "size_bytes": len(content.encode()),
+            "extension": ext,
+        })
+    except Exception as exc:
+        return safe_json({"error": str(exc)})
+
+
+@tool
 def compare_git_gcs(folder_path: str = None, file_path: str = None) -> str:
     """Compare code between the Git repository and the deployed GCS bucket.
 
