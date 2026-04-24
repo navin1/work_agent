@@ -124,6 +124,10 @@ COMPOSER / AIRFLOW RULES:
 - get_dag_task_graph shows task dependency diagram with execution states.
 - get_dag_rendered_files returns the DAG source + all rendered SQL files in one call.
 - get_execution_log with dag_id only = recent runs; add run_id = task list; add task_id = full log.
+- get_task_sql(composer_env, dag_id, task_id) fetches the rendered SQL for a specific task.
+  Use this whenever the user asks for SQL of a named task (e.g. "get task sql for X in dag Y in Z",
+  "show sql for task X", "rendered sql for task X"). The UI renders it automatically in a Monaco
+  editor — your text reply MUST be exactly ONE sentence (rule 17 above).
 
 OPTIMISATION RULES:
 - optimise_dag: structural improvements to a DAG (parallelism, dependencies, triggers).
