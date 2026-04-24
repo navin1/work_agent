@@ -59,30 +59,45 @@ LARGE_FILE_ROW_THRESHOLD: int = int(os.getenv("LARGE_FILE_ROW_THRESHOLD", "50000
 RECONCILIATION_CACHE_TTL_MINUTES: int = int(os.getenv("RECONCILIATION_CACHE_TTL_MINUTES", "30"))
 
 
-def _parse_composer_envs() -> dict[str, tuple[str, str, str]]:
-    """Parse COMPOSER_ENVS=alias:project/location/env-name,..."""
+def _parse_composer_envs() -> dict[str, dict]:
+    """Parse COMPOSER_ENVS into a dict of config entries.
+
+    Supported formats (per entry):
+      alias:https://airflow-url              — URL provided directly
+      alias:project/location/env-name        — fetch everything from Composer API
+    """
     raw = os.getenv("COMPOSER_ENVS", "")
     result = {}
     for part in raw.split(","):
         part = part.strip()
         if ":" not in part:
             continue
-        alias, gcp_path = part.split(":", 1)
-        segments = gcp_path.strip().split("/")
-        if len(segments) == 3:
-            result[alias.strip()] = (segments[0], segments[1], segments[2])
+        alias, value = part.split(":", 1)
+        alias = alias.strip()
+        value = value.strip()
+        if value.startswith("http"):
+            result[alias] = {"mode": "url", "airflow_url": value.rstrip("/")}
+        else:
+            segments = value.split("/")
+            if len(segments) == 3:
+                result[alias] = {"mode": "api", "project": segments[0], "location": segments[1], "env_name": segments[2]}
     return result
 
 
-COMPOSER_ENVS: dict[str, tuple[str, str, str]] = _parse_composer_envs()
+COMPOSER_ENVS: dict[str, dict] = _parse_composer_envs()
 
 _composer_info_cache: dict[str, dict] = {}
 
 
 def get_composer_info(env_name: str) -> dict:
-    """Fetch and cache Composer environment info from the Cloud Composer API.
+    """Fetch and cache Composer environment info.
 
-    Returns: airflow_url, airflow_version, python_version, bq_sdk.
+    For 'api' mode: calls the Cloud Composer Management API to get the Airflow URL,
+    Airflow version, Python version, and installed PyPI packages.
+    For 'url' mode: uses the URL directly; version info is unavailable.
+
+    Returns dict with: airflow_url, airflow_version, python_version, bq_sdk.
+    On API failure, _error contains the exception message.
     """
     if env_name in _composer_info_cache:
         return _composer_info_cache[env_name]
@@ -91,7 +106,18 @@ def get_composer_info(env_name: str) -> dict:
     if not entry:
         raise ValueError(f"Composer env '{env_name}' not found. Available: {list(COMPOSER_ENVS)}")
 
-    project, location, name = entry
+    if entry["mode"] == "url":
+        info = {
+            "airflow_url": entry["airflow_url"],
+            "airflow_version": "unknown",
+            "python_version": "unknown",
+            "bq_sdk": "google-cloud-bigquery",
+        }
+        _composer_info_cache[env_name] = info
+        return info
+
+    # mode == "api"
+    project, location, name = entry["project"], entry["location"], entry["env_name"]
     try:
         from google.cloud.orchestration.airflow.service_v1 import EnvironmentsClient
         from core.auth import get_credentials

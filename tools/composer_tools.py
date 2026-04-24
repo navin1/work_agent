@@ -31,8 +31,12 @@ def _base_url(env_name: str) -> str:
     info = config.get_composer_info(env_name)
     url = info.get("airflow_url")
     if not url:
+        error = info.get("_error", "unknown error")
         raise ValueError(
-            f"Could not resolve Airflow URL for '{env_name}': {info.get('_error', 'unknown error')}"
+            f"Could not resolve Airflow URL for '{env_name}'. "
+            f"Cause: {error}. "
+            f"Fix: set COMPOSER_ENVS=alias:https://your-airflow-url to use a direct URL, "
+            f"or check that the GCP project/location/env-name are correct and ADC is configured."
         )
     return url + "/api/v1"
 
