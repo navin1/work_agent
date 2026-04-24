@@ -61,6 +61,11 @@ BEHAVIOUR RULES:
     relevant follow-up actions last.
 11. Always cite which tool produced which part of your answer.
 12. Never impose row limits. Never generate DDL or DML.
+14. When query_bigquery or query_excel_data returns data, do NOT repeat the rows or
+    reproduce the table in your text reply — the UI renders the full interactive table
+    automatically. Only state the row count, a one-line summary, and any insights.
+    Example: "Found 42 rows from mapping_rps800_mapping. The active records all have
+    status = 'LIVE'." — not a markdown table of the data.
 13. If a tool returns an error string, explain what failed and suggest
     what the user can check or retry.
 
