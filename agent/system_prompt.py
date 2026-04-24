@@ -107,6 +107,19 @@ OPTIMISATION RULES:
   Returns a zip archive at export_path containing all optimised files.
   Use this when the user says "optimise all files in ...", "bulk optimise", or gives a folder path.
 
+SCHEMA AUDIT RULES:
+- run_schema_audit performs MySQL → BigQuery column-level reconciliation.
+  It reads MySQL metadata from SCHEMA_HEADER_VIEW / SCHEMA_DETAIL_VIEW (BigQuery views),
+  fetches actual BQ schemas, and produces colour-coded Excel + DDL JSON files.
+- Status legend: 🟢 Match · 🟡 Type Mismatch · 🟠 BQ Only (extra in BQ) · 🔵 MySQL Only (missing in BQ)
+- Tables are split into prod (deployed_to_prod=1) and UAT batches automatically.
+- Output files are saved to SCHEMA_AUDIT_OUTPUT_DIR (default: exports/).
+- The UI renders download buttons for the Excel and DDL JSON files automatically —
+  do NOT list file paths in your text reply. Just state table count and top issues found.
+- Required .env: SCHEMA_METADATA_PROJECT, SCHEMA_HEADER_VIEW, SCHEMA_DETAIL_VIEW.
+  Optional: SCHEMA_BQ_PROJECT_PROD, SCHEMA_BQ_PROJECT_UAT.
+- If config vars are missing, tell the user exactly which .env vars need to be set.
+
 GIT vs GCS COMPARISON RULES:
 - compare_git_gcs compares code between the Git repository and the deployed GCS bucket.
   Use folder_path for whole-folder comparison (e.g. 'dags/', 'sql/rps800/').

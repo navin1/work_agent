@@ -85,6 +85,22 @@ Ask questions in plain English. The agent plans, calls the right tools, and retu
 
 ---
 
+### Schema Audit (MySQL → BigQuery)
+
+| Example | What it does |
+|---|---|
+| `Run schema audit` | Full MySQL→BQ column reconciliation for all streamed tables |
+| `Audit the schema` | Same — produces colour-coded Excel + DDL JSON for prod and UAT |
+
+**Status types:** 🟢 Match · 🟡 Type Mismatch · 🟠 BQ Only (extra column in BQ) · 🔵 MySQL Only (column missing from BQ)
+
+**Output:** Per-batch colour-coded Excel (Summary sheet + one sheet per table) and BigQuery DDL JSON — both available as downloads.
+
+**Required .env vars:** `SCHEMA_METADATA_PROJECT`, `SCHEMA_HEADER_VIEW`, `SCHEMA_DETAIL_VIEW`
+**Optional:** `SCHEMA_BQ_PROJECT_PROD`, `SCHEMA_BQ_PROJECT_UAT`
+
+---
+
 ### Schema Introspection
 
 | Example | What it does |

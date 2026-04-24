@@ -43,6 +43,14 @@ GCS_FILE_EXTENSIONS: list[str] = [
 # Comma-separated. Falls back to GCS_PREFIXES if not set.
 DAG_FOLDER: str = os.getenv("DAG_FOLDER", "")
 
+# Schema Audit — MySQL-to-BigQuery reconciliation
+SCHEMA_METADATA_PROJECT: str = os.getenv("SCHEMA_METADATA_PROJECT", "")
+SCHEMA_BQ_PROJECT_PROD: str  = os.getenv("SCHEMA_BQ_PROJECT_PROD", "")
+SCHEMA_BQ_PROJECT_UAT: str   = os.getenv("SCHEMA_BQ_PROJECT_UAT", "")
+SCHEMA_HEADER_VIEW: str      = os.getenv("SCHEMA_HEADER_VIEW", "")
+SCHEMA_DETAIL_VIEW: str      = os.getenv("SCHEMA_DETAIL_VIEW", "")
+SCHEMA_AUDIT_OUTPUT_DIR: str = os.getenv("SCHEMA_AUDIT_OUTPUT_DIR", str(Path(__file__).parent.parent / "exports"))
+
 DATA_ROOT: str = os.getenv("DATA_ROOT", str(Path(__file__).parent.parent / "data"))
 USER_DATA_ROOT: str = os.getenv("USER_DATA_ROOT", str(Path(__file__).parent.parent / "user_data"))
 EXPORTS_ROOT: str = os.getenv("EXPORTS_ROOT", str(Path(__file__).parent.parent / "exports"))

@@ -278,6 +278,7 @@ import renderers.performance_matrix as _pm
 import renderers.reconciliation_panel as _rp
 import renderers.optimised_file_viewer as _ofv
 import renderers.lineage_graph as _lg
+import renderers.schema_audit_panel as _sap
 
 
 def dispatch_renderers(agent_output: dict) -> None:
@@ -329,6 +330,9 @@ def dispatch_renderers(agent_output: dict) -> None:
 
     if "compare_git_gcs" in tools_called:
         _ofv.render_git_gcs_diff(tools_called["compare_git_gcs"])
+
+    if "run_schema_audit" in tools_called:
+        _sap.render_schema_audit(tools_called["run_schema_audit"])
 
 
 # ── Chat history ──────────────────────────────────────────────────────────────

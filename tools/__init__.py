@@ -41,6 +41,7 @@ from tools.testing_tools import (
 )
 from tools.schema_tools import (
     introspect_bq_schema,
+    run_schema_audit,
 )
 from tools.reconciliation_tools import (
     run_reconciliation,
@@ -100,6 +101,7 @@ ALL_TOOLS = [
     validate_optimisation,
     # Schema
     introspect_bq_schema,
+    run_schema_audit,
     # Reconciliation
     run_reconciliation,
     get_reconciliation_detail,
