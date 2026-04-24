@@ -83,8 +83,8 @@ def render(raw_json: str) -> None:
         margin=dict(l=40, r=60, t=20, b=40),
         height=max(200, len(df) * 40 + 80),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # Summary table
     cols_to_show = [c for c in ["task_id", "avg_duration_s", "max_duration_s", "p95_duration_s", "success_rate", "run_count", "health_status"] if c in df.columns]
-    st.dataframe(df[cols_to_show], hide_index=True, use_container_width=True)
+    st.dataframe(df[cols_to_show], hide_index=True, width="stretch")

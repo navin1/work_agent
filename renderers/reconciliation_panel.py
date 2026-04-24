@@ -72,7 +72,7 @@ def render(raw_json: str, agent=None) -> None:
         else:
             df_show = df
 
-        st.dataframe(df_show, hide_index=True, use_container_width=True)
+        st.dataframe(df_show, hide_index=True, width="stretch")
 
         # Detail expander per row
         for _, row in df_show.iterrows():

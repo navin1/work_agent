@@ -262,7 +262,7 @@ if not st.session_state.messages:
     cols = st.columns(3)
     for i, prompt in enumerate(_SUGGESTED_PROMPTS):
         with cols[i % 3]:
-            if st.button(prompt, key=f"suggested_{i}", use_container_width=True):
+            if st.button(prompt, key=f"suggested_{i}", width="stretch"):
                 st.session_state.messages.append({"role": "user", "content": prompt})
                 st.rerun()
 

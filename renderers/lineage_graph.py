@@ -302,7 +302,7 @@ def _render_content_panel(info: dict) -> None:
                 }
                 for j in jobs
             ]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
         else:
             st.info("No recent job runs found for this DAG.")
 
@@ -366,7 +366,8 @@ def render_lineage_graph(raw_json: str) -> None:
 
     excel_file = data.get("excel_file", "unknown.xlsx")
     table_name = data.get("table_name", excel_file)
-    state_key  = f"lineage__{table_name}"
+    state_key     = f"lineage_state__{table_name}"
+    component_key = f"lineage_flow__{table_name}"
 
     nodes, edges, content_map = _build_graph(data)
 
@@ -377,7 +378,7 @@ def render_lineage_graph(raw_json: str) -> None:
     st.caption("🖱 Click any node to view rendered content and execution details.")
 
     new_state = streamlit_flow(
-        key=state_key,
+        key=component_key,
         state=st.session_state[state_key],
         height=560,
         fit_view=True,

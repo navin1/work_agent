@@ -38,7 +38,7 @@ def render(raw_json: str, agent=None) -> None:
         stat_parts.append(f"**{stats['execution_time_ms']}ms**")
     st.caption("  ·  ".join(stat_parts))
 
-    st.dataframe(df, hide_index=True, use_container_width=True)
+    st.dataframe(df, hide_index=True, width="stretch")
 
     # Export buttons
     col1, col2, col3 = st.columns([1, 1, 4])

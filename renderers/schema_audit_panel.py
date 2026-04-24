@@ -66,7 +66,7 @@ def _render_batch(label: str, data: dict, uid: str) -> None:
                     file_name=Path(excel_path).name,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=f"dl_excel_{label}_{uid}",
-                    use_container_width=True,
+                    width="stretch",
                 )
         else:
             st.caption("Excel file not available")
@@ -80,7 +80,7 @@ def _render_batch(label: str, data: dict, uid: str) -> None:
                     file_name=Path(ddl_path).name,
                     mime="application/json",
                     key=f"dl_ddl_{label}_{uid}",
-                    use_container_width=True,
+                    width="stretch",
                 )
         else:
             st.caption("DDL JSON file not available")

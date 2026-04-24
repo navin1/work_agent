@@ -73,8 +73,8 @@ def render(raw_json: str, agent=None) -> None:
         margin=dict(l=40, r=20, t=20, b=40),
         height=320,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # Run table
     display_cols = [c for c in ["run_id", "logical_date", "start_time", "end_time", "duration_seconds", "status", "triggered_by"] if c in df.columns]
-    st.dataframe(df[display_cols], hide_index=True, use_container_width=True)
+    st.dataframe(df[display_cols], hide_index=True, width="stretch")

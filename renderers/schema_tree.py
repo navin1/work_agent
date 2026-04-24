@@ -50,7 +50,7 @@ def render(raw_json: str) -> None:
     with tab2:
         if leaves:
             df = pd.DataFrame(leaves)
-            st.dataframe(df, hide_index=True, use_container_width=True)
+            st.dataframe(df, hide_index=True, width="stretch")
         else:
             st.info("No leaf fields available.")
 
