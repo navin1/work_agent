@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 AGENT_MODEL: str = os.getenv("AGENT_MODEL", "gemini-2.5-pro")
 GOOGLE_CLOUD_PROJECT: str = os.getenv("GOOGLE_CLOUD_PROJECT", "")
@@ -67,13 +67,14 @@ HTTP_SSL_VERIFY: bool | str = _parse_ssl_verify()
 # requests, urllib3, google-auth token refresh, gRPC channels (BigQuery, Storage, Composer API).
 if HTTP_SSL_VERIFY is False:
     import ssl
+    import urllib3
     ssl._create_default_https_context = ssl._create_unverified_context  # noqa: SLF001
-    os.environ.setdefault("PYTHONHTTPSVERIFY", "0")
-    os.environ.setdefault("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", "")
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    os.environ["PYTHONHTTPSVERIFY"] = "0"
 elif isinstance(HTTP_SSL_VERIFY, str):
-    os.environ.setdefault("REQUESTS_CA_BUNDLE", HTTP_SSL_VERIFY)
-    os.environ.setdefault("SSL_CERT_FILE", HTTP_SSL_VERIFY)
-    os.environ.setdefault("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", HTTP_SSL_VERIFY)
+    os.environ["REQUESTS_CA_BUNDLE"] = HTTP_SSL_VERIFY
+    os.environ["SSL_CERT_FILE"] = HTTP_SSL_VERIFY
+    os.environ["GRPC_DEFAULT_SSL_ROOTS_FILE_PATH"] = HTTP_SSL_VERIFY
 
 DATA_ROOT: str = os.getenv("DATA_ROOT", str(Path(__file__).parent.parent / "data"))
 USER_DATA_ROOT: str = os.getenv("USER_DATA_ROOT", str(Path(__file__).parent.parent / "user_data"))
