@@ -10,7 +10,7 @@ from langchain.tools import tool
 
 from core import config, persistence
 from core.audit import log_audit
-from core.sql_formatter import format_sql
+from core.sql_formatter import format_sql, extract_sql
 
 
 # ── Auth / HTTP helpers ───────────────────────────────────────────────────────
@@ -393,16 +393,10 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
     start = time.time()
     try:
         task_data = _get(composer_env, f"/dags/{dag_id}/tasks/{task_id}")
-
-        raw_sql = None
-        for field in ["sql", "query", "bql"]:
-            val = task_data.get(field) or task_data.get("template_fields", {}).get(field)
-            if val:
-                raw_sql = val
-                break
+        raw_sql = extract_sql(task_data)
 
         rendered_sql = None
-        if rendered and raw_sql:
+        if rendered:
             try:
                 runs_data = _get(composer_env, f"/dags/{dag_id}/dagRuns", {
                     "limit": 10, "order_by": "-start_date", "state": "success"
@@ -411,18 +405,15 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
                     run_id = runs_data["dag_runs"][0]["dag_run_id"]
                     inst = _get(composer_env,
                                 f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id}/renderedFields")
-                    for field in ["sql", "query", "bql"]:
-                        if field in inst:
-                            rendered_sql = inst[field]
-                            break
+                    rendered_sql = extract_sql(inst)
             except Exception:
                 pass
 
         result = {
             "dag_id": dag_id,
             "task_id": task_id,
-            "raw_sql": format_sql(raw_sql or "") if raw_sql else None,
-            "rendered_sql": format_sql(rendered_sql or "") if rendered_sql else None,
+            "raw_sql": format_sql(raw_sql) if raw_sql else None,
+            "rendered_sql": format_sql(rendered_sql) if rendered_sql else (format_sql(raw_sql) if raw_sql else None),
         }
         log_audit("composer_tools", composer_env, f"task_sql:{dag_id}/{task_id}",
                   duration_ms=int((time.time()-start)*1000))

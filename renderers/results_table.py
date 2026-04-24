@@ -54,6 +54,35 @@ def render_dag_list(raw_json: str) -> None:
                            mime="text/csv", key=f"dags_csv_{id(raw_json)}")
 
 
+def render_task_sql(raw_json: str) -> None:
+    import streamlit.components.v1 as components
+    from core import monaco
+
+    try:
+        data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+    except Exception:
+        st.error("Could not parse task SQL result.")
+        return
+
+    if "error" in data:
+        st.error(f"Task SQL error: {data['error']}")
+        return
+
+    sql = data.get("rendered_sql") or data.get("raw_sql")
+    if not sql:
+        st.info("No SQL found for this task.")
+        return
+
+    dag_id  = data.get("dag_id", "")
+    task_id = data.get("task_id", "")
+    label   = "Rendered SQL" if data.get("rendered_sql") else "Raw SQL (no successful run found)"
+
+    st.markdown(f"**{label}** — `{dag_id}` / `{task_id}`")
+    lines  = sql.count("\n") + 1
+    height = max(300, lines * 22 + 60)
+    components.html(monaco.editor(sql, language="sql", height=height), height=height + 20)
+
+
 def render(raw_json: str, agent=None) -> None:
     try:
         data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
