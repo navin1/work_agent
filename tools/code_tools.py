@@ -18,18 +18,15 @@ from core.sql_formatter import format_sql
 
 # ── Git helpers ───────────────────────────────────────────────────────────────
 
-def _git_headers() -> dict:
-    return {
+def _git_session(raw: bool = False) -> requests.Session:
+    """Return a requests.Session configured for GitHub API calls."""
+    session = requests.Session()
+    session.verify = config.HTTP_SSL_VERIFY
+    session.headers.update({
         "Authorization": f"token {config.GIT_API_TOKEN}",
-        "Accept": "application/vnd.github.v3+json",
-    }
-
-
-def _git_raw_headers() -> dict:
-    return {
-        "Authorization": f"token {config.GIT_API_TOKEN}",
-        "Accept": "application/vnd.github.v3.raw",
-    }
+        "Accept": "application/vnd.github.v3.raw" if raw else "application/vnd.github.v3+json",
+    })
+    return session
 
 
 def _list_git_files(folder_path: str) -> dict[str, dict]:
@@ -37,8 +34,7 @@ def _list_git_files(folder_path: str) -> dict[str, dict]:
     if not config.GIT_API_TOKEN or not config.GIT_REPO:
         return {}
     url = f"{config.GIT_API_BASE_URL}/repos/{config.GIT_REPO}/git/trees/{config.GIT_BRANCH}"
-    resp = requests.get(url, headers=_git_headers(), params={"recursive": "1"},
-                        timeout=30, verify=config.HTTP_SSL_VERIFY)
+    resp = _git_session().get(url, params={"recursive": "1"}, timeout=30)
     resp.raise_for_status()
     prefix = folder_path.rstrip("/") + "/" if folder_path else ""
     result = {}
@@ -57,8 +53,7 @@ def _fetch_git_content(full_path: str) -> str | None:
     if not config.GIT_API_TOKEN or not config.GIT_REPO:
         return None
     url = f"{config.GIT_API_BASE_URL}/repos/{config.GIT_REPO}/contents/{full_path}"
-    resp = requests.get(url, headers=_git_raw_headers(),
-                        params={"ref": config.GIT_BRANCH}, timeout=20, verify=config.HTTP_SSL_VERIFY)
+    resp = _git_session(raw=True).get(url, params={"ref": config.GIT_BRANCH}, timeout=20)
     return resp.text if resp.status_code == 200 else None
 
 
@@ -150,8 +145,7 @@ def _fetch_file(file_path: str) -> tuple[str | None, str]:
     filename = Path(file_path).name
     try:
         url = f"{config.GIT_API_BASE_URL}/repos/{config.GIT_REPO}/git/trees/{config.GIT_BRANCH}"
-        resp = requests.get(url, headers=_git_headers(), params={"recursive": "1"},
-                        timeout=30, verify=config.HTTP_SSL_VERIFY)
+        resp = _git_session().get(url, params={"recursive": "1"}, timeout=30)
         if resp.ok:
             for item in resp.json().get("tree", []):
                 if item.get("type") == "blob" and item["path"].endswith(f"/{filename}"):

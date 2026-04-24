@@ -26,15 +26,22 @@ def normalise_name(raw: str) -> str:
     return name.strip("_")
 
 
+def _git_session() -> "requests.Session":
+    import requests
+    session = requests.Session()
+    session.verify = config.HTTP_SSL_VERIFY
+    session.headers.update({"Authorization": f"token {config.GIT_API_TOKEN}"})
+    return session
+
+
 def _fetch_git_files() -> dict[str, dict]:
     """Fetch SQL/PY/YAML files from Git via API."""
     files = {}
     try:
-        import requests
-        headers = {"Authorization": f"token {config.GIT_API_TOKEN}"}
+        session = _git_session()
         for root_path in config.GIT_ROOT_PATHS:
             url = f"{config.GIT_API_BASE_URL}/repos/{config.GIT_REPO}/contents/{root_path}?ref={config.GIT_BRANCH}"
-            resp = requests.get(url, headers=headers, timeout=30, verify=config.HTTP_SSL_VERIFY)
+            resp = session.get(url, timeout=30)
             if resp.status_code != 200:
                 continue
             for item in resp.json():
@@ -42,7 +49,7 @@ def _fetch_git_files() -> dict[str, dict]:
                     name = item.get("name", "")
                     if any(name.endswith(ext) for ext in config.GIT_FILE_EXTENSIONS):
                         norm = normalise_name(name)
-                        content_resp = requests.get(item["download_url"], headers=headers, timeout=30, verify=config.HTTP_SSL_VERIFY)
+                        content_resp = session.get(item["download_url"], timeout=30)
                         files[norm] = {
                             "raw_name": name,
                             "path": item.get("path"),

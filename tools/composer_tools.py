@@ -15,19 +15,23 @@ from core.sql_formatter import format_sql
 
 # ── Auth / HTTP helpers ───────────────────────────────────────────────────────
 
-def _get_headers(env_name: str) -> dict:
-    from core.auth import get_credentials
-    import google.auth.transport.requests
-    import requests as _requests
-    creds, _ = get_credentials()
-    if creds:
-        session = _requests.Session()
-        session.verify = config.HTTP_SSL_VERIFY
-        creds.refresh(google.auth.transport.requests.Request(session=session))
-        token = creds.token
-    else:
-        token = config.GIT_API_TOKEN
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+def _make_session(env_name: str) -> requests.Session:
+    """Return a requests.Session with a fresh GCP Bearer token and SSL config."""
+    import google.auth
+    import google.auth.transport.requests as google_requests
+
+    credentials, _ = google.auth.default(
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
+    credentials.refresh(google_requests.Request())
+
+    session = requests.Session()
+    session.verify = config.HTTP_SSL_VERIFY
+    session.headers.update({
+        "Authorization": f"Bearer {credentials.token}",
+        "Content-Type": "application/json",
+    })
+    return session
 
 
 def _base_url(env_name: str) -> str:
@@ -46,8 +50,7 @@ def _base_url(env_name: str) -> str:
 
 def _get(env_name: str, path: str, params: dict = None) -> dict:
     url = _base_url(env_name) + path
-    resp = requests.get(url, headers=_get_headers(env_name), params=params,
-                        timeout=30, verify=config.HTTP_SSL_VERIFY)
+    resp = _make_session(env_name).get(url, params=params, timeout=30)
     resp.raise_for_status()
     return resp.json()
 
@@ -101,18 +104,24 @@ def _fetch_dag_source_gcs(dag_id: str) -> str | None:
         return None
 
 
+def _make_git_session() -> requests.Session:
+    """Return a requests.Session configured for GitHub API calls."""
+    session = requests.Session()
+    session.verify = config.HTTP_SSL_VERIFY
+    session.headers.update({
+        "Authorization": f"token {config.GIT_API_TOKEN}",
+        "Accept": "application/vnd.github.v3.raw",
+    })
+    return session
+
+
 def _fetch_file_from_git(file_path: str) -> str | None:
     """Fetch a file from the configured Git repository by its path."""
     try:
         if not config.GIT_API_TOKEN or not config.GIT_REPO:
             return None
         url = f"{config.GIT_API_BASE_URL}/repos/{config.GIT_REPO}/contents/{file_path}"
-        headers = {
-            "Authorization": f"token {config.GIT_API_TOKEN}",
-            "Accept": "application/vnd.github.v3.raw",
-        }
-        resp = requests.get(url, headers=headers, params={"ref": config.GIT_BRANCH},
-                            timeout=20, verify=config.HTTP_SSL_VERIFY)
+        resp = _make_git_session().get(url, params={"ref": config.GIT_BRANCH}, timeout=20)
         if resp.status_code == 200:
             return resp.text
         return None
@@ -134,9 +143,7 @@ def _fetch_dag_source(dag_id: str) -> str | None:
         try:
             if config.GIT_API_TOKEN and config.GIT_REPO:
                 url = f"{config.GIT_API_BASE_URL}/repos/{config.GIT_REPO}/git/trees/HEAD"
-                headers = {"Authorization": f"token {config.GIT_API_TOKEN}"}
-                tree_resp = requests.get(url, headers=headers, params={"recursive": "1"},
-                                         timeout=20, verify=config.HTTP_SSL_VERIFY)
+                tree_resp = _make_git_session().get(url, params={"recursive": "1"}, timeout=20)
                 if tree_resp.status_code == 200:
                     for item in tree_resp.json().get("tree", []):
                         item_path = item.get("path", "")
@@ -503,9 +510,9 @@ def get_error_logs(composer_env: str, dag_id: str, run_id: str, task_id: str = N
             tid = inst["task_id"]
             try_number = inst.get("try_number", 1)
             try:
-                log_resp = requests.get(
+                log_resp = _make_session(composer_env).get(
                     _base_url(composer_env) + f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{tid}/logs/{try_number}",
-                    headers=_get_headers(composer_env), timeout=30, verify=config.HTTP_SSL_VERIFY
+                    timeout=30
                 )
                 lines = log_resp.text.splitlines()
                 error_lines = [l for l in lines if "ERROR" in l or "Traceback" in l or "Exception" in l]
@@ -601,9 +608,9 @@ def get_execution_log(composer_env: str, dag_id: str, run_id: str = None, task_i
         # Level 3: task_id provided — fetch full log
         inst = _get(composer_env, f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id}")
         try_number = inst.get("try_number", 1)
-        log_resp = requests.get(
+        log_resp = _make_session(composer_env).get(
             _base_url(composer_env) + f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id}/logs/{try_number}",
-            headers=_get_headers(composer_env), timeout=30, verify=config.HTTP_SSL_VERIFY,
+            timeout=30,
         )
         lines = log_resp.text.splitlines()
         error_lines = [l for l in lines if any(k in l for k in ("ERROR", "Traceback", "Exception", "CRITICAL"))]
