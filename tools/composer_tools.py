@@ -221,9 +221,15 @@ def list_dags(composer_env: str, tag_filter: str = None, subfolder_filter: str =
                 "file_location": file_loc,
                 "subfolder": subfolder,
             })
+        airflow_url = config.get_composer_info(composer_env).get("airflow_url", "")
         log_audit("composer_tools", composer_env, "list_dags", row_count=len(dags),
                   duration_ms=int((time.time()-start)*1000))
-        return json.dumps({"composer_env": composer_env, "dags": dags, "count": len(dags)})
+        return json.dumps({
+            "composer_env": composer_env,
+            "airflow_url": airflow_url,
+            "dags": dags,
+            "count": len(dags),
+        })
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
