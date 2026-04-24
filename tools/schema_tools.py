@@ -1,5 +1,6 @@
 """Schema introspection and MySQL→BigQuery schema audit tools."""
 import json
+from core.json_utils import safe_json
 import re
 import time
 from datetime import datetime
@@ -72,7 +73,7 @@ def introspect_bq_schema(project_id: str, dataset_id: str, table_id: str) -> str
         }
         log_audit("schema_tools", table_ref, "introspect_bq_schema",
                   duration_ms=int((time.time()-start)*1000))
-        return json.dumps(result, default=str)
+        return safe_json(result)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
@@ -415,6 +416,6 @@ def run_schema_audit() -> str:
         log_audit("schema_tools", config.SCHEMA_METADATA_PROJECT, "run_schema_audit",
                   row_count=len(all_tables),
                   duration_ms=int((time.time() - start) * 1000))
-        return json.dumps(results, default=str)
+        return safe_json(results)
     except Exception as exc:
         return json.dumps({"error": str(exc)})

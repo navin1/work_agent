@@ -1,5 +1,6 @@
 """BigQuery read-only tools."""
 import json
+from core.json_utils import safe_json
 import time
 
 from langchain.tools import tool
@@ -71,7 +72,7 @@ def query_bigquery(sql: str, project_id: str = None) -> str:
             "stats": stats,
         }
         log_audit("bigquery_tools", project_id or "bq", sql, row_count=len(df), duration_ms=duration_ms)
-        return json.dumps(out, default=str)
+        return safe_json(out)
     except Exception as exc:
         log_audit("bigquery_tools", project_id or "bq", sql, duration_ms=int((time.time() - start) * 1000))
         return json.dumps({"error": str(exc)})
@@ -115,7 +116,7 @@ def list_bq_tables(project_id: str, dataset_id: str) -> str:
                 "table_type": t.table_type,
             })
         log_audit("bigquery_tools", f"{project_id}.{dataset_id}", "list_tables", row_count=len(tables))
-        return json.dumps({"project_id": project_id, "dataset_id": dataset_id, "tables": tables}, default=str)
+        return safe_json({"project_id": project_id, "dataset_id": dataset_id, "tables": tables})
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
@@ -143,6 +144,6 @@ def get_bq_job_stats(job_id: str, project_id: str = None) -> str:
             "ended": str(job.ended),
         }
         log_audit("bigquery_tools", resolved, f"job_stats:{job_id}")
-        return json.dumps(stats, default=str)
+        return safe_json(stats)
     except Exception as exc:
         return json.dumps({"error": str(exc)})

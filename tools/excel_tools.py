@@ -1,5 +1,6 @@
 """Excel/DuckDB tools — ingestion and querying of mapping and master files."""
 import json
+from core.json_utils import safe_json
 import time
 from pathlib import Path
 
@@ -180,7 +181,7 @@ def query_excel_data(sql: str) -> str:
             "formatted_sql": format_sql(sql),
         }
         log_audit("excel_tools", "duckdb", sql, row_count=len(df), duration_ms=duration)
-        return json.dumps(result, default=str)
+        return safe_json(result)
     except Exception as exc:
         log_audit("excel_tools", "duckdb", sql, duration_ms=int((time.time() - start) * 1000))
         return json.dumps({"error": str(exc)})
@@ -203,7 +204,7 @@ def list_loaded_tables(folder_filter: str = None) -> str:
                 "count": 0,
                 "note": "No Excel mapping files are loaded. Place .xlsx files in data/mapping/<folder>/",
             })
-        return json.dumps(tables, default=str)
+        return safe_json(tables)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
@@ -460,6 +461,6 @@ def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
 
         log_audit("excel_tools", "trace", f"trace_from_excel:{mapping_file_name}",
                   duration_ms=int((time.time()-start)*1000))
-        return json.dumps(result, default=str)
+        return safe_json(result)
     except Exception as exc:
         return json.dumps({"error": str(exc)})

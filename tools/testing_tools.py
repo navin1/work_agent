@@ -1,6 +1,7 @@
 """Query output comparison and optimisation validation tools."""
 import hashlib
 import json
+from core.json_utils import safe_json
 import time
 
 from langchain.tools import tool
@@ -73,7 +74,7 @@ def compare_query_outputs(original_sql: str, optimised_sql: str) -> str:
         }
         log_audit("testing_tools", "bigquery", "compare_query_outputs",
                   duration_ms=int((time.time()-start)*1000))
-        return json.dumps(result, default=str)
+        return safe_json(result)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
@@ -133,6 +134,6 @@ Return JSON only: list of {{item, status (pass/warn/fail), reason}}. No markdown
         }
         log_audit("testing_tools", "bigquery", "validate_optimisation",
                   duration_ms=int((time.time()-start)*1000))
-        return json.dumps(result, default=str)
+        return safe_json(result)
     except Exception as exc:
         return json.dumps({"error": str(exc)})

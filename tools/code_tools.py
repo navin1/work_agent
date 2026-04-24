@@ -1,6 +1,7 @@
 """Git vs GCS code comparison and file optimisation tools."""
 import difflib
 import json
+from core.json_utils import safe_json
 import time
 import zipfile
 from datetime import datetime

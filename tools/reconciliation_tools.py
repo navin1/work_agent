@@ -1,5 +1,6 @@
 """Three-way reconciliation: Git vs GCS vs Excel mapping sheets."""
 import json
+from core.json_utils import safe_json
 import re
 import time
 from datetime import datetime, timezone
@@ -194,7 +195,7 @@ def run_reconciliation(scope: str = "all", folder_filter: str = None) -> str:
             result = dict(_cache)
             result["cache_age_minutes"] = round(cache_age, 1)
             log_audit("reconciliation_tools", "cache", "run_reconciliation", duration_ms=int((time.time()-start)*1000))
-            return json.dumps(result, default=str)
+            return safe_json(result)
 
         result = _reconcile_all(scope=scope, folder_filter=folder_filter)
         _cache = result
@@ -202,7 +203,7 @@ def run_reconciliation(scope: str = "all", folder_filter: str = None) -> str:
 
         log_audit("reconciliation_tools", "live", "run_reconciliation",
                   row_count=result["total"], duration_ms=int((time.time()-start)*1000))
-        return json.dumps(result, default=str)
+        return safe_json(result)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 

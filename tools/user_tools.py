@@ -1,5 +1,6 @@
 """User preference and workspace management tools."""
 import json
+from core.json_utils import safe_json
 import time
 
 from langchain.tools import tool
@@ -38,7 +39,7 @@ def get_saved_queries(search: str = None, source: str = None) -> str:
                        or sl in q.get("description", "").lower()
                        or any(sl in t for t in q.get("tags", []))]
         log_audit("user_tools", "persistence", "get_saved_queries", row_count=len(queries))
-        return json.dumps(queries, default=str)
+        return safe_json(queries)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
@@ -102,6 +103,6 @@ def get_favorites(search: str = None) -> str:
             sl = search.lower()
             favs = [f for f in favs if sl in f.get("name", "").lower() or sl in f.get("sql", "").lower()]
         log_audit("user_tools", "persistence", "get_favorites", row_count=len(favs))
-        return json.dumps(favs, default=str)
+        return safe_json(favs)
     except Exception as exc:
         return json.dumps({"error": str(exc)})

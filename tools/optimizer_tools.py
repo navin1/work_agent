@@ -1,5 +1,6 @@
 """SQL and DAG optimisation tools."""
 import json
+from core.json_utils import safe_json
 import time
 
 from langchain.tools import tool
