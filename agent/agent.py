@@ -71,11 +71,17 @@ def run_agent(agent, raw_prompt: str) -> dict:
                 output = content
             break
 
-    # Reconstruct intermediate_steps in the shape app.py expects:
-    # [(action_with_.tool, tool_output_str), ...]
+    # Only collect tool calls from the current turn (after the last HumanMessage).
+    # Iterating all messages would include tool calls from previous turns.
+    last_human = max(
+        (i for i, m in enumerate(messages) if isinstance(m, HumanMessage)),
+        default=0,
+    )
+    current_turn = messages[last_human + 1:]
+
     intermediate_steps = []
     tool_call_names: dict[str, str] = {}
-    for msg in messages:
+    for msg in current_turn:
         if isinstance(msg, AIMessage) and msg.tool_calls:
             for tc in msg.tool_calls:
                 tool_call_names[tc["id"]] = tc["name"]
