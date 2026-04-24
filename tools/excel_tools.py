@@ -1,0 +1,453 @@
+"""Excel/DuckDB tools — ingestion and querying of mapping and master files."""
+import json
+import time
+from pathlib import Path
+
+from langchain.tools import tool
+
+from core import config, persistence
+from core.audit import log_audit
+from core.duckdb_manager import get_manager
+
+
+def _safe_table_name(folder: str, stem: str) -> str:
+    import re
+    name = f"{folder}_{stem}".lower()
+    name = re.sub(r"[^a-z0-9_]", "_", name)
+    name = re.sub(r"_+", "_", name)
+    return name.strip("_")
+
+
+def _ingest_file(path: Path, folder: str) -> dict | None:
+    """Ingest one Excel file into DuckDB. Returns registry entry or None on failure."""
+    try:
+        import pyarrow as pa
+        stat = path.stat()
+        stem = path.stem
+        table_name = _safe_table_name(folder, stem)
+
+        is_master = folder.lower() == "master"
+
+        if is_master:
+            try:
+                import polars as pl
+                df_full = pl.read_excel(str(path))
+                row_count = len(df_full)
+                if row_count > config.LARGE_FILE_ROW_THRESHOLD:
+                    arrow = df_full.to_arrow()
+                else:
+                    import pandas as pd
+                    df_pd = pd.read_excel(str(path), header=0)
+                    arrow = pa.Table.from_pandas(df_pd, preserve_index=False)
+            except ImportError:
+                import pandas as pd
+                df_pd = pd.read_excel(str(path), header=0)
+                arrow = pa.Table.from_pandas(df_pd, preserve_index=False)
+
+            bq_table = ""
+            dag_names: list[str] = []
+        else:
+            # Row 1 col A = BQ table, col B = DAG names (comma-separated)
+            # Rows 1-3 = metadata, row 4 = headers, row 5+ = data
+            import pandas as pd
+            meta_df = pd.read_excel(str(path), header=None, nrows=3)
+            bq_table = str(meta_df.iloc[0, 0]) if not meta_df.empty else ""
+            raw_dags = str(meta_df.iloc[0, 1]) if meta_df.shape[1] > 1 else ""
+            dag_names = [d.strip() for d in raw_dags.split(",") if d.strip()]
+
+            try:
+                import polars as pl
+                df_check = pl.read_excel(str(path), read_options={"skip_rows": 3})
+                if len(df_check) > config.LARGE_FILE_ROW_THRESHOLD:
+                    arrow = df_check.to_arrow()
+                    row_count = len(df_check)
+                else:
+                    raise ValueError("use pandas")
+            except Exception:
+                data_df = pd.read_excel(str(path), header=3)
+                row_count = len(data_df)
+                arrow = pa.Table.from_pandas(data_df, preserve_index=False)
+
+        get_manager().register_table(table_name, arrow)
+
+        entry = {
+            "table_name": table_name,
+            "bq_table": bq_table,
+            "dag_names": dag_names,
+            "source_folder": folder,
+            "file_path": str(path),
+            "columns": [field.name for field in arrow.schema],
+            "row_count": len(arrow),
+            "last_ingested": time.time(),
+            "file_mtime": stat.st_mtime,
+        }
+        return entry
+    except Exception:
+        return None
+
+
+def ingest_excel_files(folder_filter: str = None) -> dict:
+    """Ingest all Excel files from data/mapping and data/master into DuckDB.
+    Silently skips if no mapping or master directories exist."""
+    data_root = Path(config.DATA_ROOT)
+    mapping_root = data_root / "mapping"
+    master_root = data_root / "master"
+
+    registry = list(persistence.get_registry())
+    registry_index = {e["file_path"]: e for e in registry}
+
+    loaded = []
+    skipped = []
+    errors = []
+
+    def process_folder(folder_path: Path, folder_name: str):
+        if not folder_path.exists():
+            return
+        for xlsx in folder_path.glob("*.xlsx"):
+            if folder_filter and folder_filter.lower() not in str(xlsx).lower():
+                continue
+            existing = registry_index.get(str(xlsx))
+            if existing and existing.get("file_mtime") == xlsx.stat().st_mtime:
+                _ingest_file(xlsx, folder_name)
+                skipped.append(xlsx.name)
+                continue
+            entry = _ingest_file(xlsx, folder_name)
+            if entry:
+                registry_index[str(xlsx)] = entry
+                loaded.append(xlsx.name)
+            else:
+                errors.append(xlsx.name)
+
+    if mapping_root.exists():
+        for subfolder in mapping_root.iterdir():
+            if subfolder.is_dir():
+                process_folder(subfolder, subfolder.name)
+
+    process_folder(master_root, "master")
+
+    updated_registry = list(registry_index.values())
+    persistence.save_registry(updated_registry)
+
+    return {"loaded": len(loaded), "skipped": len(skipped), "errors": errors, "files": loaded}
+
+
+def _get_loaded_tables_internal() -> list[dict]:
+    registry = persistence.get_registry()
+    db = get_manager()
+    active = set(db.list_tables())
+    result = []
+    for entry in registry:
+        if entry["table_name"] in active:
+            result.append(entry)
+    return result
+
+
+@tool
+def query_excel_data(sql: str) -> str:
+    """Execute SQL against DuckDB containing all ingested Excel mapping and master files.
+    Table names follow pattern {folder}_{filename} e.g. rps800_reconciliation, master_products.
+    Use list_loaded_tables first to confirm table names. Returns JSON with columns and rows.
+    Returns empty result (not error) if no tables are loaded yet."""
+    start = time.time()
+    try:
+        from core.sql_formatter import is_ddl_dml, format_sql
+        if is_ddl_dml(sql):
+            return json.dumps({"error": "DDL/DML not permitted. Only SELECT queries are allowed."})
+        db = get_manager()
+        if not db.list_tables():
+            return json.dumps({
+                "columns": [], "rows": [], "row_count": 0,
+                "note": "No Excel tables loaded. Check that data/mapping/ has .xlsx files.",
+            })
+        df = db.execute(sql)
+        duration = int((time.time() - start) * 1000)
+        result = {
+            "columns": list(df.columns),
+            "rows": df.values.tolist(),
+            "row_count": len(df),
+            "formatted_sql": format_sql(sql),
+        }
+        log_audit("excel_tools", "duckdb", sql, row_count=len(df), duration_ms=duration)
+        return json.dumps(result, default=str)
+    except Exception as exc:
+        log_audit("excel_tools", "duckdb", sql, duration_ms=int((time.time() - start) * 1000))
+        return json.dumps({"error": str(exc)})
+
+
+@tool
+def list_loaded_tables(folder_filter: str = None) -> str:
+    """List all Excel files loaded into DuckDB.
+    Returns JSON list with: table_name, source_folder, row_count,
+    bq_table_reference, dag_names, last_ingested, file_path.
+    Returns empty list (not error) if no Excel files are configured."""
+    try:
+        tables = _get_loaded_tables_internal()
+        if folder_filter:
+            tables = [t for t in tables if folder_filter.lower() in t.get("source_folder", "").lower()]
+        log_audit("excel_tools", "duckdb", "list_loaded_tables", row_count=len(tables))
+        if not tables:
+            return json.dumps({
+                "tables": [],
+                "count": 0,
+                "note": "No Excel mapping files are loaded. Place .xlsx files in data/mapping/<folder>/",
+            })
+        return json.dumps(tables, default=str)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+@tool
+def get_table_schema(table_name: str) -> str:
+    """Get column names and types for a DuckDB table.
+    Call this before writing queries against unfamiliar tables.
+    Returns JSON schema."""
+    try:
+        db = get_manager()
+        if not db.list_tables():
+            return json.dumps({"error": "No Excel tables loaded.", "table_name": table_name})
+        schema = db.get_schema(table_name)
+        log_audit("excel_tools", "duckdb", f"schema:{table_name}")
+        return json.dumps({"table_name": table_name, "columns": schema})
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+@tool
+def get_bq_table_for_mapping_file(mapping_file_name: str) -> str:
+    """Return the BigQuery table a mapping file maps to (from row 1, col A).
+    Returns BQ table reference string or 'not found'."""
+    try:
+        registry = persistence.get_registry()
+        if not registry:
+            return json.dumps({"bq_table": "not found", "note": "No Excel mapping files loaded."})
+        name_lower = mapping_file_name.lower()
+        for entry in registry:
+            if name_lower in entry.get("file_path", "").lower() or name_lower in entry.get("table_name", "").lower():
+                log_audit("excel_tools", "registry", f"bq_table_for:{mapping_file_name}")
+                return json.dumps({"bq_table": entry.get("bq_table", "not found")})
+        return json.dumps({"bq_table": "not found"})
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+@tool
+def get_dags_for_mapping_file(mapping_file_name: str) -> str:
+    """Return DAG names associated with a mapping file (from row 1, col B).
+    Returns JSON list of DAG name strings."""
+    try:
+        registry = persistence.get_registry()
+        if not registry:
+            return json.dumps([])
+        name_lower = mapping_file_name.lower()
+        for entry in registry:
+            if name_lower in entry.get("file_path", "").lower() or name_lower in entry.get("table_name", "").lower():
+                log_audit("excel_tools", "registry", f"dags_for:{mapping_file_name}")
+                return json.dumps(entry.get("dag_names", []))
+        return json.dumps([])
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+@tool
+def reingest_excel_files(folder_filter: str = None) -> str:
+    """Re-ingest Excel files from disk into DuckDB.
+    Only re-ingests files modified since last ingest (mtime check).
+    Optionally scoped to a specific folder. Returns ingest summary.
+    Safe to call even if no Excel files exist."""
+    try:
+        result = ingest_excel_files(folder_filter=folder_filter)
+        log_audit("excel_tools", "disk", "reingest", row_count=result["loaded"])
+        return json.dumps(result)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+@tool
+def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
+    """Full end-to-end trace starting from an Excel mapping file.
+    Given an Excel file name, returns: BigQuery table, DAG names, Airflow job (run) details,
+    task list, rendered SQL for each task, and execution log summary.
+    This is the primary tool for tracing data lineage from an Excel mapping sheet.
+
+    mapping_file_name: partial name or table_name of the Excel mapping file.
+    composer_env: optional Composer environment to query. If not provided, uses pinned workspace
+                  or first available environment.
+    Returns JSON with full trace: bq_table, dag_names, airflow_jobs, tasks, rendered_sqls."""
+    start = time.time()
+    try:
+        registry = persistence.get_registry()
+        if not registry:
+            return json.dumps({
+                "status": "no_excel",
+                "note": "No Excel mapping files are loaded. Place .xlsx files in data/mapping/<folder>/",
+            })
+
+        # Find matching registry entry
+        name_lower = mapping_file_name.lower()
+        entry = None
+        for e in registry:
+            if (name_lower in e.get("file_path", "").lower() or
+                    name_lower in e.get("table_name", "").lower() or
+                    name_lower in Path(e.get("file_path", "")).stem.lower()):
+                entry = e
+                break
+
+        if not entry:
+            return json.dumps({
+                "status": "not_found",
+                "note": f"No mapping file matching '{mapping_file_name}' found in registry.",
+                "available": [e.get("table_name") for e in registry],
+            })
+
+        bq_table = entry.get("bq_table", "")
+        dag_names = entry.get("dag_names", [])
+
+        result = {
+            "excel_file": Path(entry.get("file_path", "")).name,
+            "table_name": entry.get("table_name"),
+            "source_folder": entry.get("source_folder"),
+            "bq_table": bq_table,
+            "dag_names": dag_names,
+            "airflow_jobs": [],
+            "dag_details": [],
+            "note": None,
+        }
+
+        if not dag_names:
+            result["note"] = "No DAG names found in row 1, col B of this mapping file."
+            return json.dumps(result)
+
+        # Resolve composer env
+        env = composer_env
+        if not env:
+            from core.workspace import get_pinned_workspace
+            ws = get_pinned_workspace()
+            env = ws.get("composer_env")
+        if not env and config.COMPOSER_ENVS:
+            env = next(iter(config.COMPOSER_ENVS))
+
+        if not env or env not in config.COMPOSER_ENVS:
+            result["note"] = (
+                f"Composer environment not configured or not found. "
+                f"Available: {list(config.COMPOSER_ENVS.keys()) or 'none'}. "
+                "Pass composer_env parameter or configure COMPOSER_ENVS in .env"
+            )
+            return json.dumps(result)
+
+        # For each DAG: get recent jobs + task graph + rendered SQL
+        from tools.composer_tools import _get
+        from core.sql_formatter import format_sql
+
+        for dag_id in dag_names:
+            dag_info = {
+                "dag_id": dag_id,
+                "recent_jobs": [],
+                "tasks": [],
+                "rendered_sqls": [],
+                "error": None,
+            }
+
+            try:
+                # Recent runs (jobs)
+                runs_data = _get(env, f"/dags/{dag_id}/dagRuns",
+                                 {"limit": 5, "order_by": "-start_date"})
+                latest_run_id = None
+                for r in runs_data.get("dag_runs", []):
+                    s = r.get("start_date")
+                    e = r.get("end_date")
+                    duration = None
+                    if s and e:
+                        try:
+                            from datetime import datetime
+                            duration = (
+                                datetime.fromisoformat(e.replace("Z", "+00:00")) -
+                                datetime.fromisoformat(s.replace("Z", "+00:00"))
+                            ).total_seconds()
+                        except Exception:
+                            pass
+                    dag_info["recent_jobs"].append({
+                        "run_id": r.get("dag_run_id"),
+                        "state": r.get("state"),
+                        "start_time": s,
+                        "end_time": e,
+                        "duration_seconds": duration,
+                    })
+                    if latest_run_id is None:
+                        latest_run_id = r.get("dag_run_id")
+
+                # Task list with states from latest run
+                tasks_data = _get(env, f"/dags/{dag_id}/tasks")
+                task_defs = {t["task_id"]: t for t in tasks_data.get("tasks", [])}
+
+                task_states = {}
+                if latest_run_id:
+                    try:
+                        instances = _get(env, f"/dags/{dag_id}/dagRuns/{latest_run_id}/taskInstances")
+                        for inst in instances.get("task_instances", []):
+                            task_states[inst["task_id"]] = {
+                                "state": inst.get("state"),
+                                "duration_seconds": inst.get("duration"),
+                            }
+                    except Exception:
+                        pass
+
+                for tid, tdef in task_defs.items():
+                    state_info = task_states.get(tid, {})
+                    dag_info["tasks"].append({
+                        "task_id": tid,
+                        "operator": tdef.get("class_ref", {}).get("class_name", ""),
+                        "depends_on": tdef.get("downstream_task_ids", []),
+                        "state": state_info.get("state"),
+                        "duration_seconds": state_info.get("duration_seconds"),
+                    })
+
+                # Rendered SQL for each task
+                success_run_id = None
+                try:
+                    success_runs = _get(env, f"/dags/{dag_id}/dagRuns",
+                                        {"limit": 5, "order_by": "-start_date", "state": "success"})
+                    if success_runs.get("dag_runs"):
+                        success_run_id = success_runs["dag_runs"][0]["dag_run_id"]
+                except Exception:
+                    pass
+
+                for tid in task_defs:
+                    sql = None
+                    # Try rendered fields
+                    if success_run_id:
+                        try:
+                            inst = _get(env,
+                                        f"/dags/{dag_id}/dagRuns/{success_run_id}/taskInstances/{tid}/renderedFields")
+                            for field in ["sql", "query", "bql"]:
+                                if inst.get(field) and str(inst[field]).strip():
+                                    sql = str(inst[field])
+                                    break
+                        except Exception:
+                            pass
+                    # Fallback to raw
+                    if not sql:
+                        try:
+                            task_data = _get(env, f"/dags/{dag_id}/tasks/{tid}")
+                            for field in ["sql", "query", "bql"]:
+                                val = task_data.get(field) or task_data.get("template_fields", {}).get(field)
+                                if val and str(val).strip():
+                                    sql = str(val)
+                                    break
+                        except Exception:
+                            pass
+                    if sql:
+                        dag_info["rendered_sqls"].append({
+                            "task_id": tid,
+                            "rendered_sql": format_sql(sql),
+                        })
+
+            except Exception as e:
+                dag_info["error"] = str(e)
+
+            result["dag_details"].append(dag_info)
+
+        log_audit("excel_tools", "trace", f"trace_from_excel:{mapping_file_name}",
+                  duration_ms=int((time.time()-start)*1000))
+        return json.dumps(result, default=str)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
