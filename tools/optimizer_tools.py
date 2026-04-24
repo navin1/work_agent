@@ -1,6 +1,6 @@
 """SQL and DAG optimisation tools."""
 import json
-from core.json_utils import safe_json
+from core.json_utils import safe_json, extract_json
 import time
 
 from langchain.tools import tool
@@ -122,12 +122,8 @@ def optimise_sql(sql: str, composer_env: str = None) -> str:
             SystemMessage(content=system),
             HumanMessage(content=f"Optimise this SQL:\n\n{sql}"),
         ])
-        raw = response.content.strip()
-        if raw.startswith("```"):
-            raw = "\n".join(raw.split("\n")[1:])
-            if raw.endswith("```"):
-                raw = raw[:-3]
-        parsed = json.loads(raw)
+        raw = response.content
+        parsed = extract_json(raw)
         parsed["original_sql"] = format_sql(sql)
         if "optimised_sql" in parsed:
             parsed["optimised_sql"] = format_sql(parsed["optimised_sql"])
@@ -164,12 +160,8 @@ No markdown, no preamble."""
             SystemMessage(content=system),
             HumanMessage(content=f"Optimise this DAG:\n\n{source}"),
         ])
-        raw = response.content.strip()
-        if raw.startswith("```"):
-            raw = "\n".join(raw.split("\n")[1:])
-            if raw.endswith("```"):
-                raw = raw[:-3]
-        suggestions = json.loads(raw)
+        raw = response.content
+        suggestions = extract_json(raw)
         log_audit("optimizer_tools", composer_env, f"optimise_dag:{dag_id}", duration_ms=int((time.time()-start)*1000))
         return json.dumps({"dag_id": dag_id, "suggestions": suggestions})
     except Exception as exc:
@@ -255,12 +247,8 @@ def optimise_all_dag_sqls(composer_env: str, dag_id: str) -> str:
                     SystemMessage(content=system),
                     HumanMessage(content=f"Optimise this SQL:\n\n{sql}"),
                 ])
-                raw = response.content.strip()
-                if raw.startswith("```"):
-                    raw = "\n".join(raw.split("\n")[1:])
-                    if raw.endswith("```"):
-                        raw = raw[:-3]
-                parsed = json.loads(raw)
+                raw = response.content
+                parsed = extract_json(raw)
                 task_result["optimised_sql"] = format_sql(parsed.get("optimised_sql", sql))
                 task_result["changes"] = parsed.get("changes", [])
                 task_result["confidence_score"] = parsed.get("overall_confidence_score")
@@ -341,12 +329,8 @@ def optimise_sql_file(file_path: str, composer_env: str = None) -> str:
             SystemMessage(content=system),
             HumanMessage(content=f"Optimise this SQL:\n\n{sql}"),
         ])
-        raw = response.content.strip()
-        if raw.startswith("```"):
-            raw = "\n".join(raw.split("\n")[1:])
-            if raw.endswith("```"):
-                raw = raw[:-3]
-        parsed = json.loads(raw)
+        raw = response.content
+        parsed = extract_json(raw)
 
         log_audit("optimizer_tools", "llm", f"optimise_sql_file:{file_path}",
                   duration_ms=int((time.time()-start)*1000))

@@ -1,7 +1,7 @@
 """Git vs GCS code comparison and file optimisation tools."""
 import difflib
 import json
-from core.json_utils import safe_json
+from core.json_utils import safe_json, extract_json
 import time
 import zipfile
 from datetime import datetime
@@ -278,12 +278,8 @@ def _optimise_single(
         SystemMessage(content=opt_prompt),
         HumanMessage(content=f"Optimise this file ({file_name}):\n\n{content}"),
     ])
-    raw = response.content.strip()
-    if raw.startswith("```"):
-        raw = "\n".join(raw.split("\n")[1:])
-        if raw.endswith("```"):
-            raw = raw[:-3].strip()
-    parsed = json.loads(raw)
+    raw = response.content
+    parsed = extract_json(raw)
 
     optimised = parsed.get("optimised_content", content)
     if ext == ".sql":

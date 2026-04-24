@@ -38,7 +38,7 @@ def render_file_content(raw_json: str) -> None:
 
     st.caption(f"`{file_path}` · {size:,} bytes")
     components.html(
-        monaco.editor(content, language=lang, height=500, read_only=True),
+        monaco.editor(content, language=lang, height=500),
         height=520,
     )
     st.download_button(
@@ -142,13 +142,13 @@ def render_optimised_file(raw_json: str) -> None:
         with col_a:
             st.markdown("**Original**")
             components.html(
-                monaco.editor(original, language=lang, height=500, read_only=True),
+                monaco.editor(original, language=lang, height=500),
                 height=520,
             )
         with col_b:
             st.markdown("**Optimised**")
             components.html(
-                monaco.editor(optimised, language=lang, height=500, read_only=True),
+                monaco.editor(optimised, language=lang, height=500),
                 height=520,
             )
 
