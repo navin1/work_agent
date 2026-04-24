@@ -41,6 +41,12 @@ _NODE_COLORS = {
 
 # ── Formatting helpers ────────────────────────────────────────────────────────
 
+def _sql_height(sql: str) -> int:
+    """Monaco container height that fits the full SQL without internal scrolling."""
+    lines = sql.count("\n") + 1
+    return max(300, lines * 22 + 60)
+
+
 def _fmt_dur(secs) -> str:
     if secs is None:
         return ""
@@ -319,10 +325,8 @@ def _render_content_panel(info: dict) -> None:
             st.caption(f"Duration: {_fmt_dur(info['duration_seconds'])}")
         if has_sql and info.get("sql"):
             st.markdown("**Rendered SQL:**")
-            components.html(
-                monaco.editor(info["sql"], language="sql", height=400),
-                height=420,
-            )
+            h = _sql_height(info["sql"])
+            components.html(monaco.editor(info["sql"], language="sql", height=h), height=h + 20)
         else:
             st.info("No SQL configured for this task.")
 
@@ -330,10 +334,8 @@ def _render_content_panel(info: dict) -> None:
         st.markdown(f"#### 📝 {info['task_id']}.sql")
         st.caption(f"DAG: {info['dag_id']}")
         if info.get("sql"):
-            components.html(
-                monaco.editor(info["sql"], language="sql", height=460),
-                height=480,
-            )
+            h = _sql_height(info["sql"])
+            components.html(monaco.editor(info["sql"], language="sql", height=h), height=h + 20)
         else:
             st.info("No rendered SQL available.")
 

@@ -1,5 +1,6 @@
 """Excel/DuckDB tools — ingestion and querying of mapping and master files."""
 import json
+import re
 from core.json_utils import safe_json
 import time
 from pathlib import Path
@@ -9,6 +10,62 @@ from langchain.tools import tool
 from core import config, persistence
 from core.audit import log_audit
 from core.duckdb_manager import get_manager
+
+
+_SQL_RE = re.compile(r'\b(SELECT|WITH|INSERT|MERGE|UPDATE|DELETE|CREATE)\b', re.IGNORECASE)
+
+
+def _extract_sql(obj, _depth: int = 0) -> str | None:
+    """Recursively extract SQL from a rendered-fields value.
+
+    Priority order:
+      1. Top-level keys: sql, query, bql
+      2. BigQueryInsertJobOperator: configuration.query.query
+      3. Any string value that looks like SQL (contains a DML/DQL keyword, len > 20)
+    """
+    if _depth > 6:
+        return None
+
+    if isinstance(obj, str):
+        s = obj.strip()
+        if len(s) > 20 and _SQL_RE.search(s):
+            return s
+        return None
+
+    if isinstance(obj, dict):
+        # 1. Priority top-level fields
+        for field in ("sql", "query", "bql"):
+            val = obj.get(field)
+            if val is not None:
+                result = _extract_sql(val, _depth + 1)
+                if result:
+                    return result
+
+        # 2. BigQueryInsertJobOperator nesting: configuration.query.query
+        cfg = obj.get("configuration")
+        if isinstance(cfg, dict):
+            q_block = cfg.get("query")
+            if isinstance(q_block, dict):
+                result = _extract_sql(q_block.get("query"), _depth + 1)
+                if result:
+                    return result
+
+        # 3. Walk remaining keys
+        skip = {"sql", "query", "bql", "configuration"}
+        for key, val in obj.items():
+            if key in skip:
+                continue
+            result = _extract_sql(val, _depth + 1)
+            if result:
+                return result
+
+    if isinstance(obj, list):
+        for item in obj:
+            result = _extract_sql(item, _depth + 1)
+            if result:
+                return result
+
+    return None
 
 
 def _safe_table_name(folder: str, stem: str) -> str:
@@ -426,26 +483,19 @@ def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
 
                 for tid in task_defs:
                     sql = None
-                    # Try rendered fields
+                    # Try rendered fields first (Jinja-resolved values)
                     if success_run_id:
                         try:
                             inst = _get(env,
                                         f"/dags/{dag_id}/dagRuns/{success_run_id}/taskInstances/{tid}/renderedFields")
-                            for field in ["sql", "query", "bql"]:
-                                if inst.get(field) and str(inst[field]).strip():
-                                    sql = str(inst[field])
-                                    break
+                            sql = _extract_sql(inst)
                         except Exception:
                             pass
-                    # Fallback to raw
+                    # Fallback to raw task definition
                     if not sql:
                         try:
                             task_data = _get(env, f"/dags/{dag_id}/tasks/{tid}")
-                            for field in ["sql", "query", "bql"]:
-                                val = task_data.get(field) or task_data.get("template_fields", {}).get(field)
-                                if val and str(val).strip():
-                                    sql = str(val)
-                                    break
+                            sql = _extract_sql(task_data)
                         except Exception:
                             pass
                     if sql:
