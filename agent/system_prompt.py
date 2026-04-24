@@ -1,5 +1,5 @@
 """Dynamic system prompt builder — rebuilt on every agent invocation."""
-from core import persistence
+from core import config, persistence
 from core.workspace import get_pinned_workspace
 
 
@@ -19,8 +19,15 @@ def build_system_prompt() -> str:
     glossary_str = "\n".join(f"  {k}: {v}" for k, v in glossary.items()) or "  (empty)"
 
     if loaded_tables:
+        from pathlib import Path
+        data_root = Path(config.DATA_ROOT).resolve()
+        def _rel(file_path: str) -> str:
+            try:
+                return str(Path(file_path).resolve().relative_to(data_root))
+            except ValueError:
+                return Path(file_path).name
         tables_str = "\n".join(
-            f"  {t['table_name']} → BQ: {t.get('bq_table', 'n/a')}, DAGs: {t.get('dag_names', [])}"
+            f"  file:{_rel(t['file_path'])} → table:{t['table_name']} | BQ:{t.get('bq_table','n/a')} | rows:{t.get('row_count','?')} | DAGs:{t.get('dag_names',[])}"
             for t in loaded_tables
         )
     else:
@@ -47,10 +54,11 @@ BEHAVIOUR RULES:
    fails, report the error from the tool — do not say the tool doesn't exist.
 1. If no Excel tables are loaded, still answer Composer/BigQuery questions normally.
    Excel tools return empty results (not errors) when no files are configured.
-2. Call list_loaded_tables before querying DuckDB if unsure which tables exist.
+2. The LOADED EXCEL TABLES section above maps every Excel filename to its DuckDB table name.
+   When the user mentions an Excel file name (e.g. "result_1.xlsx" or "result_1"),
+   look it up in that mapping to find the table name — do NOT ask the user for the table name.
    When user asks to "show", "display", "view", or "open" an Excel/mapping file,
-   immediately call query_excel_data with SELECT * FROM <table_name> — do not ask
-   what they are looking for.
+   immediately call query_excel_data with SELECT * FROM <table_name> — no clarification needed.
 3. Call list_composers to discover available environments before calling list_dags.
 4. Call list_dags before referencing DAGs if unsure what is available.
 5. For optimisation requests always run in sequence:
@@ -67,11 +75,13 @@ BEHAVIOUR RULES:
     relevant follow-up actions last.
 11. Always cite which tool produced which part of your answer.
 12. Never impose row limits. Never generate DDL or DML.
-14. When query_bigquery or query_excel_data returns data, do NOT repeat the rows or
-    reproduce the table in your text reply — the UI renders the full interactive table
-    automatically. Only state the row count, a one-line summary, and any insights.
-    Example: "Found 42 rows from mapping_rps800_mapping. The active records all have
-    status = 'LIVE'." — not a markdown table of the data.
+14. CRITICAL — When query_bigquery or query_excel_data returns data, your text reply
+    MUST be exactly ONE sentence stating only the row count.
+    NEVER list column names, row values, schema details, or any part of the data.
+    NEVER produce a markdown table, column list, or bullet points of data.
+    The UI always renders the full interactive table automatically.
+    GOOD: "Returned 120 rows from master_result_1."
+    BAD: listing columns, describing values, any data reproduction whatsoever.
 13. If a tool returns an error string, explain what failed and suggest
     what the user can check or retry.
 
