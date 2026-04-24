@@ -51,6 +51,30 @@ SCHEMA_HEADER_VIEW: str      = os.getenv("SCHEMA_HEADER_VIEW", "")
 SCHEMA_DETAIL_VIEW: str      = os.getenv("SCHEMA_DETAIL_VIEW", "")
 SCHEMA_AUDIT_OUTPUT_DIR: str = os.getenv("SCHEMA_AUDIT_OUTPUT_DIR", str(Path(__file__).parent.parent / "exports"))
 
+# SSL verification for outbound HTTP requests.
+# Set to "false" to disable (corporate proxy), or a path to a CA bundle file.
+def _parse_ssl_verify() -> bool | str:
+    val = os.getenv("HTTP_SSL_VERIFY", "true").strip().lower()
+    if val == "false":
+        return False
+    if val != "true":
+        return val  # treat as CA bundle path
+    return True
+
+HTTP_SSL_VERIFY: bool | str = _parse_ssl_verify()
+
+# Apply SSL setting process-wide so all libraries are covered:
+# requests, urllib3, google-auth token refresh, gRPC channels (BigQuery, Storage, Composer API).
+if HTTP_SSL_VERIFY is False:
+    import ssl
+    ssl._create_default_https_context = ssl._create_unverified_context  # noqa: SLF001
+    os.environ.setdefault("PYTHONHTTPSVERIFY", "0")
+    os.environ.setdefault("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", "")
+elif isinstance(HTTP_SSL_VERIFY, str):
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", HTTP_SSL_VERIFY)
+    os.environ.setdefault("SSL_CERT_FILE", HTTP_SSL_VERIFY)
+    os.environ.setdefault("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", HTTP_SSL_VERIFY)
+
 DATA_ROOT: str = os.getenv("DATA_ROOT", str(Path(__file__).parent.parent / "data"))
 USER_DATA_ROOT: str = os.getenv("USER_DATA_ROOT", str(Path(__file__).parent.parent / "user_data"))
 EXPORTS_ROOT: str = os.getenv("EXPORTS_ROOT", str(Path(__file__).parent.parent / "exports"))

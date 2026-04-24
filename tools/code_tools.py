@@ -37,7 +37,8 @@ def _list_git_files(folder_path: str) -> dict[str, dict]:
     if not config.GIT_API_TOKEN or not config.GIT_REPO:
         return {}
     url = f"{config.GIT_API_BASE_URL}/repos/{config.GIT_REPO}/git/trees/{config.GIT_BRANCH}"
-    resp = requests.get(url, headers=_git_headers(), params={"recursive": "1"}, timeout=30)
+    resp = requests.get(url, headers=_git_headers(), params={"recursive": "1"},
+                        timeout=30, verify=config.HTTP_SSL_VERIFY)
     resp.raise_for_status()
     prefix = folder_path.rstrip("/") + "/" if folder_path else ""
     result = {}
@@ -57,7 +58,7 @@ def _fetch_git_content(full_path: str) -> str | None:
         return None
     url = f"{config.GIT_API_BASE_URL}/repos/{config.GIT_REPO}/contents/{full_path}"
     resp = requests.get(url, headers=_git_raw_headers(),
-                        params={"ref": config.GIT_BRANCH}, timeout=20)
+                        params={"ref": config.GIT_BRANCH}, timeout=20, verify=config.HTTP_SSL_VERIFY)
     return resp.text if resp.status_code == 200 else None
 
 
@@ -149,7 +150,8 @@ def _fetch_file(file_path: str) -> tuple[str | None, str]:
     filename = Path(file_path).name
     try:
         url = f"{config.GIT_API_BASE_URL}/repos/{config.GIT_REPO}/git/trees/{config.GIT_BRANCH}"
-        resp = requests.get(url, headers=_git_headers(), params={"recursive": "1"}, timeout=30)
+        resp = requests.get(url, headers=_git_headers(), params={"recursive": "1"},
+                        timeout=30, verify=config.HTTP_SSL_VERIFY)
         if resp.ok:
             for item in resp.json().get("tree", []):
                 if item.get("type") == "blob" and item["path"].endswith(f"/{filename}"):

@@ -34,7 +34,7 @@ def _fetch_git_files() -> dict[str, dict]:
         headers = {"Authorization": f"token {config.GIT_API_TOKEN}"}
         for root_path in config.GIT_ROOT_PATHS:
             url = f"{config.GIT_API_BASE_URL}/repos/{config.GIT_REPO}/contents/{root_path}?ref={config.GIT_BRANCH}"
-            resp = requests.get(url, headers=headers, timeout=30)
+            resp = requests.get(url, headers=headers, timeout=30, verify=config.HTTP_SSL_VERIFY)
             if resp.status_code != 200:
                 continue
             for item in resp.json():
@@ -42,7 +42,7 @@ def _fetch_git_files() -> dict[str, dict]:
                     name = item.get("name", "")
                     if any(name.endswith(ext) for ext in config.GIT_FILE_EXTENSIONS):
                         norm = normalise_name(name)
-                        content_resp = requests.get(item["download_url"], headers=headers, timeout=30)
+                        content_resp = requests.get(item["download_url"], headers=headers, timeout=30, verify=config.HTTP_SSL_VERIFY)
                         files[norm] = {
                             "raw_name": name,
                             "path": item.get("path"),

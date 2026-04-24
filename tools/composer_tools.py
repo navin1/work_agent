@@ -18,9 +18,12 @@ from core.sql_formatter import format_sql
 def _get_headers(env_name: str) -> dict:
     from core.auth import get_credentials
     import google.auth.transport.requests
+    import requests as _requests
     creds, _ = get_credentials()
     if creds:
-        creds.refresh(google.auth.transport.requests.Request())
+        session = _requests.Session()
+        session.verify = config.HTTP_SSL_VERIFY
+        creds.refresh(google.auth.transport.requests.Request(session=session))
         token = creds.token
     else:
         token = config.GIT_API_TOKEN
@@ -43,7 +46,8 @@ def _base_url(env_name: str) -> str:
 
 def _get(env_name: str, path: str, params: dict = None) -> dict:
     url = _base_url(env_name) + path
-    resp = requests.get(url, headers=_get_headers(env_name), params=params, timeout=30)
+    resp = requests.get(url, headers=_get_headers(env_name), params=params,
+                        timeout=30, verify=config.HTTP_SSL_VERIFY)
     resp.raise_for_status()
     return resp.json()
 
@@ -107,7 +111,8 @@ def _fetch_file_from_git(file_path: str) -> str | None:
             "Authorization": f"token {config.GIT_API_TOKEN}",
             "Accept": "application/vnd.github.v3.raw",
         }
-        resp = requests.get(url, headers=headers, params={"ref": config.GIT_BRANCH}, timeout=20)
+        resp = requests.get(url, headers=headers, params={"ref": config.GIT_BRANCH},
+                            timeout=20, verify=config.HTTP_SSL_VERIFY)
         if resp.status_code == 200:
             return resp.text
         return None
@@ -130,7 +135,8 @@ def _fetch_dag_source(dag_id: str) -> str | None:
             if config.GIT_API_TOKEN and config.GIT_REPO:
                 url = f"{config.GIT_API_BASE_URL}/repos/{config.GIT_REPO}/git/trees/HEAD"
                 headers = {"Authorization": f"token {config.GIT_API_TOKEN}"}
-                tree_resp = requests.get(url, headers=headers, params={"recursive": "1"}, timeout=20)
+                tree_resp = requests.get(url, headers=headers, params={"recursive": "1"},
+                                         timeout=20, verify=config.HTTP_SSL_VERIFY)
                 if tree_resp.status_code == 200:
                     for item in tree_resp.json().get("tree", []):
                         item_path = item.get("path", "")
@@ -499,7 +505,7 @@ def get_error_logs(composer_env: str, dag_id: str, run_id: str, task_id: str = N
             try:
                 log_resp = requests.get(
                     _base_url(composer_env) + f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{tid}/logs/{try_number}",
-                    headers=_get_headers(composer_env), timeout=30
+                    headers=_get_headers(composer_env), timeout=30, verify=config.HTTP_SSL_VERIFY
                 )
                 lines = log_resp.text.splitlines()
                 error_lines = [l for l in lines if "ERROR" in l or "Traceback" in l or "Exception" in l]
@@ -597,7 +603,7 @@ def get_execution_log(composer_env: str, dag_id: str, run_id: str = None, task_i
         try_number = inst.get("try_number", 1)
         log_resp = requests.get(
             _base_url(composer_env) + f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id}/logs/{try_number}",
-            headers=_get_headers(composer_env), timeout=30,
+            headers=_get_headers(composer_env), timeout=30, verify=config.HTTP_SSL_VERIFY,
         )
         lines = log_resp.text.splitlines()
         error_lines = [l for l in lines if any(k in l for k in ("ERROR", "Traceback", "Exception", "CRITICAL"))]
