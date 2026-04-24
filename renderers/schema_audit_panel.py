@@ -1,4 +1,5 @@
 """Renderer for run_schema_audit tool output."""
+import hashlib
 import json
 from pathlib import Path
 
@@ -30,7 +31,7 @@ def _metric_card(label: str, value, color: str = "#6366F1") -> str:
     )
 
 
-def _render_batch(label: str, data: dict) -> None:
+def _render_batch(label: str, data: dict, uid: str) -> None:
     st.markdown(f"#### {label}")
     total   = data.get("total_columns", 0)
     matched = data.get("match", 0)
@@ -63,7 +64,7 @@ def _render_batch(label: str, data: dict) -> None:
                     data=fh.read(),
                     file_name=Path(excel_path).name,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"dl_excel_{label}",
+                    key=f"dl_excel_{label}_{uid}",
                     use_container_width=True,
                 )
         else:
@@ -77,7 +78,7 @@ def _render_batch(label: str, data: dict) -> None:
                     data=fh.read(),
                     file_name=Path(ddl_path).name,
                     mime="application/json",
-                    key=f"dl_ddl_{label}",
+                    key=f"dl_ddl_{label}_{uid}",
                     use_container_width=True,
                 )
         else:
@@ -90,6 +91,8 @@ def render_schema_audit(raw_json: str) -> None:
     except Exception:
         st.error("Schema audit: could not parse result")
         return
+
+    uid = hashlib.md5(str(raw_json).encode()).hexdigest()[:8]
 
     if "error" in data:
         st.error(f"Schema audit failed: {data['error']}")
@@ -108,12 +111,12 @@ def render_schema_audit(raw_json: str) -> None:
     st.markdown("---")
 
     if "prod" in data:
-        _render_batch("Prod", data["prod"])
+        _render_batch("Prod", data["prod"], uid)
         if "uat" in data:
             st.markdown("---")
 
     if "uat" in data:
-        _render_batch("UAT", data["uat"])
+        _render_batch("UAT", data["uat"], uid)
 
     if "prod_skipped" in data:
         st.info(f"Prod batch skipped: {data['prod_skipped']}")
