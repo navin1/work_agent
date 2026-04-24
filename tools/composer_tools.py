@@ -28,10 +28,13 @@ def _get_headers(env_name: str) -> dict:
 
 
 def _base_url(env_name: str) -> str:
-    url = config.COMPOSER_ENVS.get(env_name)
+    info = config.get_composer_info(env_name)
+    url = info.get("airflow_url")
     if not url:
-        raise ValueError(f"Composer env '{env_name}' not found. Available: {list(config.COMPOSER_ENVS.keys())}")
-    return url.rstrip("/") + "/api/v1"
+        raise ValueError(
+            f"Could not resolve Airflow URL for '{env_name}': {info.get('_error', 'unknown error')}"
+        )
+    return url + "/api/v1"
 
 
 def _get(env_name: str, path: str, params: dict = None) -> dict:
@@ -144,14 +147,14 @@ def list_composers() -> str:
     Returns JSON list with: env_name, url, airflow_version, bq_sdk, python_version."""
     try:
         result = []
-        for name, url in config.COMPOSER_ENVS.items():
-            sdk = config.get_composer_sdk_info(name)
+        for name in config.COMPOSER_ENVS:
+            info = config.get_composer_info(name)
             result.append({
                 "env_name": name,
-                "url": url,
-                "airflow_version": sdk["airflow_version"],
-                "bq_sdk": sdk["bq_sdk"],
-                "python_version": sdk["python_version"],
+                "url": info["airflow_url"],
+                "airflow_version": info["airflow_version"],
+                "bq_sdk": info["bq_sdk"],
+                "python_version": info["python_version"],
             })
         if not result:
             return json.dumps({

@@ -59,24 +59,76 @@ LARGE_FILE_ROW_THRESHOLD: int = int(os.getenv("LARGE_FILE_ROW_THRESHOLD", "50000
 RECONCILIATION_CACHE_TTL_MINUTES: int = int(os.getenv("RECONCILIATION_CACHE_TTL_MINUTES", "30"))
 
 
-def _parse_composer_envs() -> dict[str, str]:
+def _parse_composer_envs() -> dict[str, tuple[str, str, str]]:
+    """Parse COMPOSER_ENVS=alias:project/location/env-name,..."""
     raw = os.getenv("COMPOSER_ENVS", "")
     result = {}
     for part in raw.split(","):
         part = part.strip()
-        if ":" in part:
-            name, url = part.split(":", 1)
-            result[name.strip()] = url.strip()
+        if ":" not in part:
+            continue
+        alias, gcp_path = part.split(":", 1)
+        segments = gcp_path.strip().split("/")
+        if len(segments) == 3:
+            result[alias.strip()] = (segments[0], segments[1], segments[2])
     return result
 
 
-COMPOSER_ENVS: dict[str, str] = _parse_composer_envs()
+COMPOSER_ENVS: dict[str, tuple[str, str, str]] = _parse_composer_envs()
+
+_composer_info_cache: dict[str, dict] = {}
+
+
+def get_composer_info(env_name: str) -> dict:
+    """Fetch and cache Composer environment info from the Cloud Composer API.
+
+    Returns: airflow_url, airflow_version, python_version, bq_sdk.
+    """
+    if env_name in _composer_info_cache:
+        return _composer_info_cache[env_name]
+
+    entry = COMPOSER_ENVS.get(env_name)
+    if not entry:
+        raise ValueError(f"Composer env '{env_name}' not found. Available: {list(COMPOSER_ENVS)}")
+
+    project, location, name = entry
+    try:
+        from google.cloud.orchestration.airflow.service_v1 import EnvironmentsClient
+        from core.auth import get_credentials
+        creds, _ = get_credentials()
+        client = EnvironmentsClient(credentials=creds)
+        env = client.get_environment(
+            name=f"projects/{project}/locations/{location}/environments/{name}"
+        )
+        sc = env.config.software_config
+        pypi = dict(sc.pypi_packages)
+        bq_pkg = next(
+            (f"{k}{v}" for k, v in pypi.items() if "google-cloud-bigquery" in k),
+            "google-cloud-bigquery",
+        )
+        info = {
+            "airflow_url": env.config.airflow_uri.rstrip("/"),
+            "airflow_version": sc.airflow_version,
+            "python_version": sc.python_version,
+            "bq_sdk": bq_pkg,
+        }
+    except Exception as exc:
+        info = {
+            "airflow_url": None,
+            "airflow_version": "unknown",
+            "python_version": "unknown",
+            "bq_sdk": "google-cloud-bigquery",
+            "_error": str(exc),
+        }
+
+    _composer_info_cache[env_name] = info
+    return info
 
 
 def get_composer_sdk_info(env_name: str) -> dict:
-    prefix = f"COMPOSER_{env_name.upper()}"
+    info = get_composer_info(env_name)
     return {
-        "airflow_version": os.getenv(f"{prefix}_AIRFLOW_VERSION", "2.6.3"),
-        "bq_sdk": os.getenv(f"{prefix}_BQ_SDK", "google-cloud-bigquery==3.11.0"),
-        "python_version": os.getenv(f"{prefix}_PYTHON_VERSION", "3.10"),
+        "airflow_version": info["airflow_version"],
+        "bq_sdk": info["bq_sdk"],
+        "python_version": info["python_version"],
     }
