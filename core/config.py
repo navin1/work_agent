@@ -70,6 +70,20 @@ AUDIT_LOG_PATH: str = os.getenv("AUDIT_LOG_PATH", str(Path(__file__).parent.pare
 LARGE_FILE_ROW_THRESHOLD: int = int(os.getenv("LARGE_FILE_ROW_THRESHOLD", "50000"))
 RECONCILIATION_CACHE_TTL_MINUTES: int = int(os.getenv("RECONCILIATION_CACHE_TTL_MINUTES", "30"))
 
+# Fallback SDK versions used when no composer_env is provided to optimisation tools.
+DEFAULT_AIRFLOW_VERSION: str = os.getenv("DEFAULT_AIRFLOW_VERSION", "2.6.3")
+DEFAULT_BQ_SDK: str          = os.getenv("DEFAULT_BQ_SDK", "google-cloud-bigquery==3.11.0")
+DEFAULT_PYTHON_VERSION: str  = os.getenv("DEFAULT_PYTHON_VERSION", "3.10")
+
+
+def get_default_sdk_info() -> dict:
+    """Fallback SDK info dict for tools that don't receive a composer_env."""
+    return {
+        "airflow_version": DEFAULT_AIRFLOW_VERSION,
+        "bq_sdk": DEFAULT_BQ_SDK,
+        "python_version": DEFAULT_PYTHON_VERSION,
+    }
+
 
 def _parse_composer_envs() -> dict[str, dict]:
     """Parse COMPOSER_ENVS into a dict of config entries.

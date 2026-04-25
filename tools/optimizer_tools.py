@@ -32,38 +32,68 @@ _DAG_OPTIMISE_SYSTEM_PROMPT = """You are an Apache Airflow DAG optimisation expe
 Airflow version: {airflow_version}, Python: {python_version}.
 ABSOLUTE CONSTRAINT: Do NOT suggest changes that alter functional behaviour, data outputs, business logic, or scheduling semantics.
 
-Suggest improvements in TWO categories:
+═══ DAG LOADING RULES — violations prevent Airflow from discovering the DAG ═══
 
-1. MODERNISATION — fix outdated patterns (tailor suggestions to the Airflow version above):
-   - Remove `dag=dag` from every task constructor; use `with DAG(...) as dag:` context manager instead.
-   - Remove deprecated `provide_context=True` from PythonOperator (redundant since Airflow 2.0).
-   - Update legacy import paths (e.g. `airflow.operators.bash_operator` → `airflow.operators.bash`,
-     `airflow.operators.python_operator` → `airflow.operators.python`,
-     `airflow.sensors.base_sensor_operator` → `airflow.sensors.base`).
-   - Replace `schedule_interval` with `schedule` (Airflow ≥ 2.4).
-   - Replace `execution_date` Jinja macro / Python variable with `logical_date` (Airflow ≥ 2.2).
-   - Replace `DummyOperator` with `EmptyOperator` (Airflow ≥ 2.4).
-   - Replace `.set_upstream()` / `.set_downstream()` calls with `>>` / `<<` bitshift operators.
-   - Replace `PythonOperator` with `@task` decorator (TaskFlow API) where the callable has no side-effects that require the operator wrapper.
-   - Add `deferrable=True` to long-running operators (BigQuery, Dataproc, Sensors) to free up worker slots (Airflow ≥ 2.2).
-   - Replace Python `for` loops generating multiple tasks with Dynamic Task Mapping using `.expand()` and `.partial()` (Airflow ≥ 2.3).
-   - Replace complex `trigger_rule` configurations for initialization/cleanup tasks with `@setup` and `@teardown` decorators (Airflow ≥ 2.7).
-   - Ban Top-Level Code: explicitly flag and move `Variable.get()`, `Connection.get()`, or DB calls out of the global DAG scope and into tasks to reduce parse time.
-   - Remove duplicate keys already covered by `default_args` (e.g. `retries`, `retry_delay`, `owner` set per-task when already in `default_args`).
-   - Add `doc_md` or `doc` to the DAG if missing (best-practice, not functional).
+RULE 1 — dag=dag and context manager are an ATOMIC pair:
+  • dag=dag in task constructors is ONLY valid when the DAG is defined as a plain variable:
+      dag = DAG('id', ...)
+      task = BashOperator(..., dag=dag)   ← required here
+  • When the DAG uses `with DAG(...) as dag:`, tasks inside the block must NOT have dag=dag.
+  • To modernise: convert `dag = DAG(...)` → `with DAG(...) as dag:`, indent all tasks
+    inside the block, THEN remove dag=dag. Do NOT remove dag=dag without the context
+    manager already wrapping the tasks — doing so silently disconnects tasks from the DAG.
 
-2. STRUCTURAL — improve runtime efficiency without changing behaviour:
-   - Identify sequential tasks that are independent and can run in parallel (remove unnecessary dependency edges).
-   - Suggest `task_groups` to group logically related tasks.
-   - Add or tighten `sensor_timeout` / `poke_interval` on sensors to prevent indefinite blocking.
-   - FAILURE RESILIENCE: Ensure `retries` (e.g., 2) and `retry_delay` are defined in `default_args` if missing.
-   - FAILURE RESILIENCE: Suggest `execution_timeout` for long-running tasks to prevent indefinite hanging.
-   - Add `trigger_rule` where the default ALL_SUCCESS is unnecessarily strict.
-   - Suggest `pool` assignment for resource-heavy tasks.
-   - Consolidate redundant branching operators.
+RULE 2 — catchup=False must be explicit:
+  • Airflow defaults to catchup=True. Without catchup=False, turning on a DAG after any
+    gap floods the scheduler with backfill runs for every missed interval from start_date.
+  • Always add catchup=False to the DAG constructor unless the user intentionally needs backfill.
+
+RULE 3 — DAG must remain at module level:
+  • Airflow's DagBag discovers DAGs by importing the file and scanning for DAG objects at
+    module scope. Never move the DAG into a function (unless using the @dag decorator),
+    a conditional block, or a try/except.
+
+RULE 4 — start_date must be a fixed datetime:
+  • start_date=datetime.now() or datetime.today() creates a moving target — Airflow will
+    never schedule the DAG correctly. It must be a hardcoded date, e.g. datetime(2024, 1, 1).
+
+RULE 5 — no top-level side-effects:
+  • Variable.get(), Connection.get(), or any DB/API call at module scope runs on every
+    scheduler parse cycle (every 30 s by default). Flag these and move them inside tasks.
+
+═══ MODERNISATION suggestions (tailor to the Airflow version above) ═══
+
+  - Remove deprecated `provide_context=True` from PythonOperator (Airflow ≥ 2.0).
+  - Update legacy import paths:
+      airflow.operators.bash_operator      → airflow.operators.bash
+      airflow.operators.python_operator    → airflow.operators.python
+      airflow.sensors.base_sensor_operator → airflow.sensors.base
+  - Replace `schedule_interval` with `schedule` (Airflow ≥ 2.4).
+  - Replace `execution_date` Jinja macro / Python variable with `logical_date` (Airflow ≥ 2.2).
+  - Replace `DummyOperator` with `EmptyOperator` (Airflow ≥ 2.4).
+  - Replace `.set_upstream()` / `.set_downstream()` calls with `>>` / `<<` bitshift operators.
+  - Replace `PythonOperator` with `@task` decorator (TaskFlow API) for pure-function callables (Airflow ≥ 2.0).
+  - Add `deferrable=True` to long-running operators (BigQuery, Dataproc, Sensors) to free worker slots (Airflow ≥ 2.2).
+  - Replace Python `for` loops generating tasks with Dynamic Task Mapping `.expand()` / `.partial()` (Airflow ≥ 2.3).
+  - Replace complex trigger_rule init/cleanup patterns with `@setup` / `@teardown` decorators (Airflow ≥ 2.7).
+  - Remove duplicate keys already in `default_args` (retries, retry_delay, owner set per-task).
+  - Add `doc_md` to the DAG if missing.
+
+═══ STRUCTURAL suggestions ═══
+
+  - Identify sequential tasks that are independent and can run in parallel.
+  - Suggest `task_groups` for logically related tasks.
+  - Add or tighten `sensor_timeout` / `poke_interval` on sensors.
+  - Add `retries` and `retry_delay` to `default_args` if missing.
+  - Suggest `execution_timeout` for long-running tasks.
+  - Add `trigger_rule` where ALL_SUCCESS is unnecessarily strict.
+  - Suggest `pool` assignment for resource-heavy tasks.
+  - Consolidate redundant branching operators.
 
 Return JSON only — a list of suggestion objects, each with:
-  description, current_code, suggested_code, reason, category ("modernisation" | "structural"), confidence ("High" | "Medium" | "Low").
+  description, current_code, suggested_code, reason,
+  category ("dag_loading" | "modernisation" | "structural"),
+  confidence ("High" | "Medium" | "Low").
 No markdown, no preamble."""
 
 
@@ -161,11 +191,7 @@ def optimise_sql(sql: str, composer_env: str = None) -> str:
     overall_confidence_score (0-100), overall_summary."""
     start = time.time()
     try:
-        sdk_info = config.get_composer_sdk_info(composer_env) if composer_env else {
-            "airflow_version": "2.6.3",
-            "bq_sdk": "google-cloud-bigquery==3.11.0",
-            "python_version": "3.10",
-        }
+        sdk_info = config.get_composer_sdk_info(composer_env) if composer_env else config.get_default_sdk_info()
         system = _OPTIMISE_SYSTEM_PROMPT.format(**sdk_info)
         raw = _call_llm(system, f"Optimise this SQL:\n\n{sql}")
         parsed = extract_json(raw)
@@ -180,8 +206,10 @@ def optimise_sql(sql: str, composer_env: str = None) -> str:
 
 @tool
 def optimise_dag(composer_env: str, dag_id: str) -> str:
-    """Optimisation suggestions for a DAG in two categories: modernisation and structural.
-    Modernisation: dag=dag removal, provide_context, legacy import paths, schedule_interval→schedule,
+    """Optimisation suggestions for a DAG in three categories: dag_loading, modernisation, structural.
+    dag_loading: catchup=False, atomic dag=dag+context-manager conversion, module-level DAG,
+      fixed start_date, no top-level side-effects — fixes that prevent Airflow from loading the DAG.
+    Modernisation: provide_context, legacy import paths, schedule_interval→schedule,
       execution_date→logical_date, DummyOperator→EmptyOperator, set_upstream→>>, TaskFlow @task.
     Structural: task parallelism, dependency graph, trigger rules, sensor timeouts, pool usage.
     Tailored to the Airflow version from env vars. HARD CONSTRAINT: no functional changes.
@@ -340,11 +368,7 @@ def optimise_sql_file(file_path: str, composer_env: str = None) -> str:
 
         flags = _flag_sql(sql)
 
-        sdk_info = config.get_composer_sdk_info(composer_env) if composer_env else {
-            "airflow_version": "2.6.3",
-            "bq_sdk": "google-cloud-bigquery==3.11.0",
-            "python_version": "3.10",
-        }
+        sdk_info = config.get_composer_sdk_info(composer_env) if composer_env else config.get_default_sdk_info()
         system = _OPTIMISE_SYSTEM_PROMPT.format(**sdk_info)
         raw = _call_llm(system, f"Optimise this SQL:\n\n{sql}")
         parsed = extract_json(raw)
