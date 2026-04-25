@@ -357,7 +357,7 @@ def get_dag_details(composer_env: str, dag_id: str) -> str:
             "dag_source": dag_source,
             "tasks": tasks,
             "file_loc": dag_data.get("file_loc", ""),
-        }, default=str)
+        })
     except Exception as exc:
         return safe_json({"error": str(exc)})
 
@@ -438,7 +438,7 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
             "last_run_id": run_id,
             "tasks_with_sql": len(tasks_sql),
             "tasks_sql": tasks_sql,
-        }, default=str)
+        })
     except Exception as exc:
         return safe_json({"error": str(exc)})
 
@@ -946,7 +946,7 @@ def get_dag_task_graph(composer_env: str, dag_id: str, run_id: str = None) -> st
             "run_end": run_end,
             "tasks": tasks,
             "diagram": diagram,
-        }, default=str)
+        })
     except Exception as exc:
         return safe_json({"error": str(exc)})
 
