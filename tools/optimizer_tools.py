@@ -10,7 +10,9 @@ from core import config
 from core.audit import log_audit
 from core.llm import get_llm
 from core.sql_formatter import format_sql
-from tools.composer_tools import _fetch_dag_source, _dag_source_not_found_error, _get
+from pathlib import Path
+
+from tools.composer_tools import _fetch_dag_source, _dag_source_not_found_error, _get, _fetch_file_from_git
 
 
 _OPTIMISE_SYSTEM_PROMPT = """You are a BigQuery/Airflow SQL performance expert.
@@ -43,6 +45,10 @@ Suggest improvements in TWO categories:
    - Replace `DummyOperator` with `EmptyOperator` (Airflow ≥ 2.4).
    - Replace `.set_upstream()` / `.set_downstream()` calls with `>>` / `<<` bitshift operators.
    - Replace `PythonOperator` with `@task` decorator (TaskFlow API) where the callable has no side-effects that require the operator wrapper.
+   - Add `deferrable=True` to long-running operators (BigQuery, Dataproc, Sensors) to free up worker slots (Airflow ≥ 2.2).
+   - Replace Python `for` loops generating multiple tasks with Dynamic Task Mapping using `.expand()` and `.partial()` (Airflow ≥ 2.3).
+   - Replace complex `trigger_rule` configurations for initialization/cleanup tasks with `@setup` and `@teardown` decorators (Airflow ≥ 2.7).
+   - Ban Top-Level Code: explicitly flag and move `Variable.get()`, `Connection.get()`, or DB calls out of the global DAG scope and into tasks to reduce parse time.
    - Remove duplicate keys already covered by `default_args` (e.g. `retries`, `retry_delay`, `owner` set per-task when already in `default_args`).
    - Add `doc_md` or `doc` to the DAG if missing (best-practice, not functional).
 
@@ -50,6 +56,8 @@ Suggest improvements in TWO categories:
    - Identify sequential tasks that are independent and can run in parallel (remove unnecessary dependency edges).
    - Suggest `task_groups` to group logically related tasks.
    - Add or tighten `sensor_timeout` / `poke_interval` on sensors to prevent indefinite blocking.
+   - FAILURE RESILIENCE: Ensure `retries` (e.g., 2) and `retry_delay` are defined in `default_args` if missing.
+   - FAILURE RESILIENCE: Suggest `execution_timeout` for long-running tasks to prevent indefinite hanging.
    - Add `trigger_rule` where the default ALL_SUCCESS is unnecessarily strict.
    - Suggest `pool` assignment for resource-heavy tasks.
    - Consolidate redundant branching operators.
@@ -317,14 +325,12 @@ def optimise_sql_file(file_path: str, composer_env: str = None) -> str:
         # Git/local path
         if sql is None:
             try:
-                from tools.composer_tools import _fetch_file_from_git
                 sql = _fetch_file_from_git(file_path)
             except Exception:
                 pass
 
         # Local filesystem fallback
         if sql is None:
-            from pathlib import Path
             local = Path(file_path)
             if local.exists():
                 sql = local.read_text(encoding="utf-8")
