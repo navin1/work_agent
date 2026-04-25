@@ -211,24 +211,33 @@ def _unwrap_rendered_fields(inst: dict) -> dict:
 def _extract_sql_from_truncated_config(s: str) -> str | None:
     """Extract SQL from Airflow's truncated configuration repr string.
 
-    When [core]max_templated_field_length is exceeded, Airflow returns the
-    configuration field as a repr-escaped string starting with 'Truncated.'.
-    The SQL lives at the innermost 'query': 'SQL...' level.
-    Newlines are encoded as the two-char sequence backslash-n.
+    After JSON parsing, Airflow's repr uses backslash-escaped quotes (\\')
+    and backslash-n (\\n) for newlines.  The SQL sits at the innermost
+    'query': 'SQL...' level of the nested configuration dict.
+    We try both the escaped form (\\') and plain form (') as fallback.
     """
     if not isinstance(s, str) or not s.startswith("Truncated"):
         return None
-    # Use rfind to get the deepest (innermost) 'query': 'SQL level
-    for q in ("'query': '", '"query": "'):
-        idx = s.rfind(q)
+
+    # After JSON parsing: \\' in JSON → \' in Python string (backslash + quote)
+    # So the pattern we see in the string is  \'query\': \'  not  'query': '
+    candidates = [
+        ("\\'query\\': \\'", "\\'"),   # escaped form: \'query\': \'  (end marker: \')
+        ("'query': '",       "'"),      # plain form fallback
+        ('"query": "',       '"'),      # double-quote form
+    ]
+
+    from core.sql_formatter import _SQL_RE  # noqa: PLC0415
+    for marker, end_quote in candidates:
+        idx = s.rfind(marker)
         if idx == -1:
             continue
-        sql_raw = s[idx + len(q):]
-        # Unescape repr-encoded newlines and tabs
+        sql_raw = s[idx + len(marker):]
+        # Unescape \\n → newline, \\t → tab, \\' → '
         sql_raw = sql_raw.replace("\\n", "\n").replace("\\t", "\t").replace("\\'", "'")
-        # Strip trailing truncation artifact e.g. "...'" or "... 's'"
-        sql_raw = re.sub(r"\s*'?\s*\.\.\.\s*$", "", sql_raw).strip()
-        from core.sql_formatter import _SQL_RE  # noqa: PLC0415
+        # Strip trailing closing quote + truncation ellipsis  e.g.  '...  or  s'...
+        sql_raw = re.sub(re.escape(end_quote) + r"\s*\.\.\.\s*$", "", sql_raw).strip()
+        sql_raw = re.sub(r"\s*\.\.\.\s*$", "", sql_raw).strip()
         if len(sql_raw) > 20 and _SQL_RE.search(sql_raw):
             return sql_raw
     return None
