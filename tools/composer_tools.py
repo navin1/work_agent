@@ -2,34 +2,55 @@
 import json
 from core.json_utils import safe_json
 import time
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
 import requests
+import urllib3
 from langchain.tools import tool
 
 from core import config, persistence
 from core.audit import log_audit
 from core.sql_formatter import format_sql, extract_sql
 
+# Suppress InsecureRequestWarning when SSL verification is intentionally disabled.
+# This prevents the warning from appearing in tool output and confusing the agent.
+if config.HTTP_SSL_VERIFY is False:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
-# ── Auth / HTTP helpers ───────────────────────────────────────────────────────
+# ── Credential cache (avoids re-fetching a token on every HTTP request) ───────
 
-def _make_session(env_name: str) -> requests.Session:
-    """Return a requests.Session with a fresh GCP Bearer token and SSL config."""
+_cred_cache: dict = {}   # keyed by scope string
+
+
+def _get_token() -> str:
+    """Return a valid GCP Bearer token, refreshing only when expired or missing."""
     import google.auth
     import google.auth.transport.requests as google_requests
 
-    credentials, _ = google.auth.default(
-        scopes=["https://www.googleapis.com/auth/cloud-platform"]
-    )
-    credentials.refresh(google_requests.Request())
+    scope = "https://www.googleapis.com/auth/cloud-platform"
+    creds = _cred_cache.get("creds")
+    # Refresh if missing or expired (or within 60 s of expiry)
+    if creds is None or not creds.token or (
+        creds.expiry and (creds.expiry - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds() < 60
+    ):
+        creds, _ = google.auth.default(scopes=[scope])
+        creds.refresh(google_requests.Request())
+        _cred_cache["creds"] = creds
+    return creds.token
 
+
+# ── Auth / HTTP helpers ───────────────────────────────────────────────────────
+
+def _make_session(_env_name: str = "") -> requests.Session:
+    """Return a requests.Session with a cached GCP Bearer token and SSL config."""
     session = requests.Session()
     session.verify = config.HTTP_SSL_VERIFY
     session.headers.update({
-        "Authorization": f"Bearer {credentials.token}",
+        "Authorization": f"Bearer {_get_token()}",
         "Content-Type": "application/json",
     })
     return session
