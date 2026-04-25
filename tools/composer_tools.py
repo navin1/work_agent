@@ -407,14 +407,13 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
         tasks_data = _get(composer_env, f"/dags/{dag_id}/tasks")
         tasks = tasks_data.get("tasks", [])
 
-        # Get last successful run for rendered context
-        run_id = None
+        # Fetch recent successful runs — kept as a list so each task can walk them
+        dag_runs_cache = []
         try:
             runs_data = _get(composer_env, f"/dags/{dag_id}/dagRuns", {
                 "limit": 10, "order_by": "-execution_date", "state": "success"
             })
-            if runs_data.get("dag_runs"):
-                run_id = runs_data["dag_runs"][0]["dag_run_id"]
+            dag_runs_cache = runs_data.get("dag_runs", [])
         except Exception:
             pass
 
@@ -440,21 +439,16 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
             except Exception:
                 pass
 
-            # Get rendered SQL using a run where this specific task completed
-            try:
-                ti_data = _get(composer_env, f"/dags/{dag_id}/taskInstances",
-                               {"task_id": task_id, "state": "success", "order_by": "-execution_date", "limit": 1})
-                task_run_id = (ti_data.get("task_instances") or [{}])[0].get("dag_run_id") or run_id
-            except Exception:
-                task_run_id = run_id
-
-            if task_run_id:
+            # Get rendered SQL — walk recent runs until this task is found
+            for dag_run in (dag_runs_cache if dag_runs_cache else []):
                 try:
                     ti_detail = _get(composer_env,
-                                     f"/dags/{_enc(dag_id)}/dagRuns/{_enc(task_run_id)}/taskInstances/{_enc(task_id)}")
+                                     f"/dags/{_enc(dag_id)}/dagRuns/{_enc(dag_run['dag_run_id'])}/taskInstances/{_enc(task_id)}")
                     rendered_sql = _extract_rendered_sql(ti_detail)
+                    if rendered_sql:
+                        break
                 except Exception:
-                    pass
+                    continue
 
             if raw_sql or rendered_sql:
                 tasks_sql.append({
@@ -469,7 +463,7 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
         return safe_json({
             "dag_id": dag_id,
             "dag_source": dag_source,
-            "last_run_id": run_id,
+            "last_run_id": dag_runs_cache[0]["dag_run_id"] if dag_runs_cache else None,
             "tasks_with_sql": len(tasks_sql),
             "tasks_sql": tasks_sql,
         })
@@ -555,41 +549,26 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
         rendered_error = None
         if rendered:
             try:
-                # Find a run where THIS specific task actually completed successfully.
-                # Using /taskInstances with task_id filter is more reliable than taking
-                # the last successful DAG run (that run may have skipped this task).
-                _ti_path = f"/dags/{dag_id}/taskInstances"
-                _ti_params = {"task_id": task_id, "state": "success", "order_by": "-execution_date", "limit": 5}
-                debug["url_task_instances"] = _base_url(composer_env) + _ti_path + f"?task_id={task_id}&state=success&order_by=-execution_date&limit=5"
-                ti_data = _get(composer_env, _ti_path, _ti_params)
-                task_instances = ti_data.get("task_instances", [])
-                debug["task_instances_found"] = len(task_instances)
+                # Step 1: get recent dag runs (confirmed working endpoint)
+                _runs_path = f"/dags/{dag_id}/dagRuns"
+                debug["url_dag_runs"] = _base_url(composer_env) + _runs_path + "?limit=10&order_by=-execution_date&state=success"
+                runs_data = _get(composer_env, _runs_path, {
+                    "limit": 10, "order_by": "-execution_date", "state": "success"
+                })
+                dag_runs = runs_data.get("dag_runs", [])
+                debug["dag_runs_found"] = len(dag_runs)
 
-                # Fall back to last successful DAG run if taskInstances endpoint unavailable
-                if not task_instances:
-                    _runs_path = f"/dags/{dag_id}/dagRuns"
-                    debug["url_dag_runs_fallback"] = _base_url(composer_env) + _runs_path + "?limit=10&order_by=-execution_date&state=success"
-                    runs_data = _get(composer_env, _runs_path, {
-                        "limit": 10, "order_by": "-execution_date", "state": "success"
-                    })
-                    dag_runs = runs_data.get("dag_runs", [])
-                    debug["dag_runs_found"] = len(dag_runs)
-                    if dag_runs:
-                        run_id = dag_runs[0]["dag_run_id"]
-                    else:
-                        run_id = None
-                else:
-                    run_id = task_instances[0]["dag_run_id"]
-
-                debug["run_id_used"] = run_id
-                if run_id:
-                    # Call the task instance detail endpoint — rendered_fields are
-                    # embedded in the response body (renderedFields sub-endpoint unavailable).
+                # Step 2: walk runs until we find one where this task ran
+                for dag_run in dag_runs:
+                    run_id = dag_run["dag_run_id"]
                     _ti_detail_path = f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances/{_enc(task_id)}"
                     debug["url_task_instance_detail"] = _base_url(composer_env) + _ti_detail_path
-                    ti_detail = _get(composer_env, _ti_detail_path)
+                    try:
+                        ti_detail = _get(composer_env, _ti_detail_path)
+                    except Exception:
+                        continue  # task didn't run in this run, try next
+                    debug["run_id_used"] = run_id
                     debug["task_instance_state"] = ti_detail.get("state")
-                    debug["task_instance_keys"] = list(ti_detail.keys()) if isinstance(ti_detail, dict) else []
                     rf = ti_detail.get("rendered_fields")
                     if isinstance(rf, dict):
                         debug["rendered_fields_inner_keys"] = list(rf.keys())
@@ -599,6 +578,7 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
                                 debug[f"rendered_{key}"] = str(val)[:300]
                     rendered_sql = _extract_rendered_sql(ti_detail)
                     debug["rendered_sql_found"] = rendered_sql is not None
+                    break  # found a run with this task — stop
             except Exception as e:
                 rendered_error = str(e)
                 debug["rendered_error"] = rendered_error
