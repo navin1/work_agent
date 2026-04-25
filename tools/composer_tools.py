@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
+import re
 import requests
 import urllib3
 from langchain.tools import tool
@@ -207,13 +208,46 @@ def _unwrap_rendered_fields(inst: dict) -> dict:
     return inst
 
 
+def _extract_sql_from_truncated_config(s: str) -> str | None:
+    """Extract SQL from Airflow's truncated configuration repr string.
+
+    When [core]max_templated_field_length is exceeded, Airflow returns the
+    configuration field as a repr-escaped string starting with 'Truncated.'.
+    The SQL lives at the innermost 'query': 'SQL...' level.
+    Newlines are encoded as the two-char sequence backslash-n.
+    """
+    if not isinstance(s, str) or not s.startswith("Truncated"):
+        return None
+    # Use rfind to get the deepest (innermost) 'query': 'SQL level
+    for q in ("'query': '", '"query": "'):
+        idx = s.rfind(q)
+        if idx == -1:
+            continue
+        sql_raw = s[idx + len(q):]
+        # Unescape repr-encoded newlines and tabs
+        sql_raw = sql_raw.replace("\\n", "\n").replace("\\t", "\t").replace("\\'", "'")
+        # Strip trailing truncation artifact e.g. "...'" or "... 's'"
+        sql_raw = re.sub(r"\s*'?\s*\.\.\.\s*$", "", sql_raw).strip()
+        from core.sql_formatter import _SQL_RE  # noqa: PLC0415
+        if len(sql_raw) > 20 and _SQL_RE.search(sql_raw):
+            return sql_raw
+    return None
+
+
 def _extract_rendered_sql(inst: dict) -> str | None:
-    """Extract SQL from a renderedFields API response.
-    Handles nested 'rendered_fields' wrapper and .sql file-path references."""
+    """Extract SQL from a task instance API response.
+    Handles nested 'rendered_fields', Airflow truncated config strings,
+    and .sql file-path references."""
     fields = _unwrap_rendered_fields(inst)
     sql = extract_sql(fields)
     if sql:
         return sql
+    # Airflow truncates large configuration fields into a repr string
+    config_val = fields.get("configuration")
+    if isinstance(config_val, str):
+        sql = _extract_sql_from_truncated_config(config_val)
+        if sql:
+            return sql
     # If a field value is a .sql file path, fetch the file
     for key in ("sql", "query", "bql"):
         val = fields.get(key)
@@ -377,7 +411,7 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
         run_id = None
         try:
             runs_data = _get(composer_env, f"/dags/{dag_id}/dagRuns", {
-                "limit": 10, "order_by": "-start_date", "state": "success"
+                "limit": 10, "order_by": "-execution_date", "state": "success"
             })
             if runs_data.get("dag_runs"):
                 run_id = runs_data["dag_runs"][0]["dag_run_id"]
@@ -409,16 +443,16 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
             # Get rendered SQL using a run where this specific task completed
             try:
                 ti_data = _get(composer_env, f"/dags/{dag_id}/taskInstances",
-                               {"task_id": task_id, "state": "success", "order_by": "-start_date", "limit": 1})
+                               {"task_id": task_id, "state": "success", "order_by": "-execution_date", "limit": 1})
                 task_run_id = (ti_data.get("task_instances") or [{}])[0].get("dag_run_id") or run_id
             except Exception:
                 task_run_id = run_id
 
             if task_run_id:
                 try:
-                    inst = _get(composer_env,
-                                f"/dags/{_enc(dag_id)}/dagRuns/{_enc(task_run_id)}/taskInstances/{_enc(task_id)}/renderedFields")
-                    rendered_sql = _extract_rendered_sql(inst)
+                    ti_detail = _get(composer_env,
+                                     f"/dags/{_enc(dag_id)}/dagRuns/{_enc(task_run_id)}/taskInstances/{_enc(task_id)}")
+                    rendered_sql = _extract_rendered_sql(ti_detail)
                 except Exception:
                     pass
 
@@ -453,7 +487,7 @@ def get_dag_run_history(composer_env: str, dag_id: str, limit: int = 10) -> str:
     start = time.time()
     try:
         data = _get(composer_env, f"/dags/{dag_id}/dagRuns", {
-            "limit": limit, "order_by": "-start_date"
+            "limit": limit, "order_by": "-execution_date"
         })
         runs = []
         for r in data.get("dag_runs", []):
@@ -525,8 +559,8 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
                 # Using /taskInstances with task_id filter is more reliable than taking
                 # the last successful DAG run (that run may have skipped this task).
                 _ti_path = f"/dags/{dag_id}/taskInstances"
-                _ti_params = {"task_id": task_id, "state": "success", "order_by": "-start_date", "limit": 5}
-                debug["url_task_instances"] = _base_url(composer_env) + _ti_path + f"?task_id={task_id}&state=success&order_by=-start_date&limit=5"
+                _ti_params = {"task_id": task_id, "state": "success", "order_by": "-execution_date", "limit": 5}
+                debug["url_task_instances"] = _base_url(composer_env) + _ti_path + f"?task_id={task_id}&state=success&order_by=-execution_date&limit=5"
                 ti_data = _get(composer_env, _ti_path, _ti_params)
                 task_instances = ti_data.get("task_instances", [])
                 debug["task_instances_found"] = len(task_instances)
@@ -534,9 +568,9 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
                 # Fall back to last successful DAG run if taskInstances endpoint unavailable
                 if not task_instances:
                     _runs_path = f"/dags/{dag_id}/dagRuns"
-                    debug["url_dag_runs_fallback"] = _base_url(composer_env) + _runs_path + "?limit=10&order_by=-start_date&state=success"
+                    debug["url_dag_runs_fallback"] = _base_url(composer_env) + _runs_path + "?limit=10&order_by=-execution_date&state=success"
                     runs_data = _get(composer_env, _runs_path, {
-                        "limit": 10, "order_by": "-start_date", "state": "success"
+                        "limit": 10, "order_by": "-execution_date", "state": "success"
                     })
                     dag_runs = runs_data.get("dag_runs", [])
                     debug["dag_runs_found"] = len(dag_runs)
@@ -549,23 +583,21 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
 
                 debug["run_id_used"] = run_id
                 if run_id:
-                    _rf_path = f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances/{_enc(task_id)}/renderedFields"
-                    debug["url_rendered_fields"] = _base_url(composer_env) + _rf_path
-                    inst = _get(composer_env, _rf_path)
-                    debug["rendered_fields_keys"] = list(inst.keys()) if isinstance(inst, dict) else str(type(inst))
-                    rf = inst.get("rendered_fields")
+                    # Call the task instance detail endpoint — rendered_fields are
+                    # embedded in the response body (renderedFields sub-endpoint unavailable).
+                    _ti_detail_path = f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances/{_enc(task_id)}"
+                    debug["url_task_instance_detail"] = _base_url(composer_env) + _ti_detail_path
+                    ti_detail = _get(composer_env, _ti_detail_path)
+                    debug["task_instance_state"] = ti_detail.get("state")
+                    debug["task_instance_keys"] = list(ti_detail.keys()) if isinstance(ti_detail, dict) else []
+                    rf = ti_detail.get("rendered_fields")
                     if isinstance(rf, dict):
                         debug["rendered_fields_inner_keys"] = list(rf.keys())
                         for key in ("sql", "query", "bql", "configuration"):
                             val = rf.get(key)
                             if val is not None:
                                 debug[f"rendered_{key}"] = str(val)[:300]
-                    else:
-                        for key in ("sql", "query", "bql", "configuration"):
-                            val = inst.get(key)
-                            if val is not None:
-                                debug[f"rendered_{key}"] = str(val)[:300]
-                    rendered_sql = _extract_rendered_sql(inst)
+                    rendered_sql = _extract_rendered_sql(ti_detail)
                     debug["rendered_sql_found"] = rendered_sql is not None
             except Exception as e:
                 rendered_error = str(e)
@@ -601,7 +633,7 @@ def get_task_performance(composer_env: str, dag_id: str, task_id: str = None, li
         crit_s = thresholds.get("task_critical_seconds", 600)
 
         runs_data = _get(composer_env, f"/dags/{dag_id}/dagRuns",
-                         {"limit": limit, "order_by": "-start_date"})
+                         {"limit": limit, "order_by": "-execution_date"})
         run_ids = [r["dag_run_id"] for r in runs_data.get("dag_runs", [])]
 
         task_stats: dict[str, list[float]] = {}
@@ -706,7 +738,7 @@ def get_execution_log(composer_env: str, dag_id: str, run_id: str = None, task_i
         # Level 1: DAG only — list recent runs
         if not run_id:
             data = _get(composer_env, f"/dags/{dag_id}/dagRuns",
-                        {"limit": 20, "order_by": "-start_date"})
+                        {"limit": 20, "order_by": "-execution_date"})
             runs = []
             for r in data.get("dag_runs", []):
                 s = r.get("start_date")
@@ -817,7 +849,7 @@ def list_airflow_jobs(composer_env: str, dag_id: str = None, limit: int = 20) ->
         for did in dag_ids:
             try:
                 runs_data = _get(composer_env, f"/dags/{did}/dagRuns",
-                                 {"limit": limit if dag_id else 5, "order_by": "-start_date"})
+                                 {"limit": limit if dag_id else 5, "order_by": "-execution_date"})
                 for r in runs_data.get("dag_runs", []):
                     s = r.get("start_date")
                     e = r.get("end_date")
@@ -877,7 +909,7 @@ def get_dag_task_graph(composer_env: str, dag_id: str, run_id: str = None) -> st
         # Resolve run_id
         if not run_id:
             runs_data = _get(composer_env, f"/dags/{dag_id}/dagRuns",
-                             {"limit": 1, "order_by": "-start_date"})
+                             {"limit": 1, "order_by": "-execution_date"})
             runs = runs_data.get("dag_runs", [])
             if runs:
                 run_id = runs[0]["dag_run_id"]
