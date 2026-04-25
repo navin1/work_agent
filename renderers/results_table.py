@@ -88,6 +88,13 @@ def render_task_sql(raw_json: str) -> None:
     height = min(max(300, lines * 22 + 60), 900)
     st.caption(f"**{label}** — `{dag_id}` / `{task_id}`  ·  {lines:,} lines")
     components.html(monaco.editor(sql, language="sql", height=height), height=height + 20)
+    st.download_button(
+        "⬇ Download SQL",
+        data=sql.encode("utf-8"),
+        file_name=f"{dag_id}__{task_id}.sql",
+        mime="text/plain",
+        key=f"dl_tasksql_{id(raw_json)}",
+    )
 
 
 def render_dag_rendered_files(raw_json: str) -> None:
@@ -122,6 +129,13 @@ def render_dag_rendered_files(raw_json: str) -> None:
                 height = min(max(280, lines * 22 + 60), 900)
                 st.caption(f"{lines:,} lines")
                 components.html(monaco.editor(sql, language="sql", height=height), height=height + 20)
+                st.download_button(
+                    "⬇ Download SQL",
+                    data=sql.encode("utf-8"),
+                    file_name=f"{dag_id}__{tid}.sql",
+                    mime="text/plain",
+                    key=f"dl_rendered_{id(raw_json)}_{tid}",
+                )
             else:
                 st.info("No SQL found for this task.")
 
@@ -211,6 +225,13 @@ def render_dag_details(raw_json: str) -> None:
             lines  = source.count("\n") + 1
             height = max(300, min(lines * 18 + 40, 800))
             components.html(monaco.editor(source, language="python", height=height), height=height + 20)
+            st.download_button(
+                "⬇ Download DAG source",
+                data=source.encode("utf-8"),
+                file_name=f"{dag_id}.py",
+                mime="text/plain",
+                key=f"dl_dagsrc_{id(raw_json)}",
+            )
 
 
 def render(raw_json: str, agent=None) -> None:

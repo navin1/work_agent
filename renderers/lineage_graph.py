@@ -328,6 +328,13 @@ def _render_content_panel(info: dict) -> None:
             st.markdown("**Rendered SQL:**")
             h = _sql_height(info["sql"])
             components.html(monaco.editor(info["sql"], language="sql", height=h), height=h + 20)
+            st.download_button(
+                "⬇ Download SQL",
+                data=info["sql"].encode("utf-8"),
+                file_name=f"{info['dag_id']}__{info['task_id']}.sql",
+                mime="text/plain",
+                key=f"dl_lg_task_{info['dag_id']}__{info['task_id']}",
+            )
         else:
             st.info("SQL not found in trace — click below to fetch it on demand.")
             env  = info.get("composer_env", "")
@@ -345,6 +352,13 @@ def _render_content_panel(info: dict) -> None:
         if info.get("sql"):
             h = _sql_height(info["sql"])
             components.html(monaco.editor(info["sql"], language="sql", height=h), height=h + 20)
+            st.download_button(
+                "⬇ Download SQL",
+                data=info["sql"].encode("utf-8"),
+                file_name=f"{info['dag_id']}__{info['task_id']}.sql",
+                mime="text/plain",
+                key=f"dl_lg_sql_{info['dag_id']}__{info['task_id']}",
+            )
         else:
             st.info("No rendered SQL available.")
 
