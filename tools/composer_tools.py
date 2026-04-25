@@ -4,6 +4,7 @@ from core.json_utils import safe_json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 from langchain.tools import tool
@@ -46,6 +47,11 @@ def _base_url(env_name: str) -> str:
             f"or check that the GCP project/location/env-name are correct and ADC is configured."
         )
     return url + "/api/v1"
+
+
+def _enc(s: str) -> str:
+    """URL-encode a single path segment (handles + and : in dag_run_ids)."""
+    return quote(str(s), safe="")
 
 
 def _get(env_name: str, path: str, params: dict = None) -> dict:
@@ -383,7 +389,7 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
             if run_id:
                 try:
                     inst = _get(composer_env,
-                                f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id}/renderedFields")
+                                f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances/{_enc(task_id)}/renderedFields")
                     rendered_sql = _extract_rendered_sql(inst)
                 except Exception:
                     pass
@@ -479,7 +485,7 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
                 if runs_data.get("dag_runs"):
                     run_id = runs_data["dag_runs"][0]["dag_run_id"]
                     inst = _get(composer_env,
-                                f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id}/renderedFields")
+                                f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances/{_enc(task_id)}/renderedFields")
                     rendered_sql = _extract_rendered_sql(inst)
             except Exception:
                 pass
@@ -519,7 +525,7 @@ def get_task_performance(composer_env: str, dag_id: str, task_id: str = None, li
 
         for run_id in run_ids:
             try:
-                instances = _get(composer_env, f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances")
+                instances = _get(composer_env, f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances")
                 for inst in instances.get("task_instances", []):
                     tid = inst["task_id"]
                     if task_id and tid != task_id:
@@ -571,7 +577,7 @@ def get_error_logs(composer_env: str, dag_id: str, run_id: str, task_id: str = N
     Returns JSON with log_lines, error_type, stack_trace."""
     start = time.time()
     try:
-        instances = _get(composer_env, f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances")
+        instances = _get(composer_env, f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances")
         failed = [
             i for i in instances.get("task_instances", [])
             if i.get("state") in ("failed", "upstream_failed")
@@ -583,7 +589,7 @@ def get_error_logs(composer_env: str, dag_id: str, run_id: str, task_id: str = N
             try_number = inst.get("try_number", 1)
             try:
                 log_resp = _make_session(composer_env).get(
-                    _base_url(composer_env) + f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{tid}/logs/{try_number}",
+                    _base_url(composer_env) + f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances/{_enc(tid)}/logs/{try_number}",
                     timeout=30
                 )
                 lines = log_resp.text.splitlines()
@@ -645,7 +651,7 @@ def get_execution_log(composer_env: str, dag_id: str, run_id: str = None, task_i
 
         # Level 2: run_id provided — list all task instances
         if not task_id:
-            instances = _get(composer_env, f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances")
+            instances = _get(composer_env, f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances")
             tasks_info = []
             for inst in instances.get("task_instances", []):
                 s = inst.get("start_date")
@@ -678,10 +684,10 @@ def get_execution_log(composer_env: str, dag_id: str, run_id: str = None, task_i
             })
 
         # Level 3: task_id provided — fetch full log
-        inst = _get(composer_env, f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id}")
+        inst = _get(composer_env, f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances/{_enc(task_id)}")
         try_number = inst.get("try_number", 1)
         log_resp = _make_session(composer_env).get(
-            _base_url(composer_env) + f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id}/logs/{try_number}",
+            _base_url(composer_env) + f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances/{_enc(task_id)}/logs/{try_number}",
             timeout=30,
         )
         lines = log_resp.text.splitlines()
@@ -797,7 +803,7 @@ def get_dag_task_graph(composer_env: str, dag_id: str, run_id: str = None) -> st
             else:
                 run_state = run_start = run_end = None
         else:
-            run_info = _get(composer_env, f"/dags/{dag_id}/dagRuns/{run_id}")
+            run_info = _get(composer_env, f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}")
             run_state = run_info.get("state")
             run_start = run_info.get("start_date")
             run_end = run_info.get("end_date")
@@ -805,7 +811,7 @@ def get_dag_task_graph(composer_env: str, dag_id: str, run_id: str = None) -> st
         # Get task instance states
         task_states = {}
         if run_id:
-            instances = _get(composer_env, f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances")
+            instances = _get(composer_env, f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances")
             for inst in instances.get("task_instances", []):
                 tid = inst["task_id"]
                 s = inst.get("start_date")
