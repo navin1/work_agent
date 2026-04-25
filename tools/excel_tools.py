@@ -421,6 +421,7 @@ def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
                 # Rendered SQL for each task — use same approach as get_task_sql
                 from tools.composer_tools import (  # noqa: PLC0415
                     _extract_rendered_sql, _best_sql, _enc,
+                    _get_sql_file_path, _rendered_was_truncated, _fetch_sql_file,
                 )
                 success_runs_list = []
                 try:
@@ -433,11 +434,17 @@ def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
                 for tid in task_defs:
                     raw_sql = None
                     rendered_sql = None
+                    rendered_truncated = False
 
-                    # Raw SQL from task definition (never truncated)
+                    # Raw SQL from task definition — use _get_sql_file_path to handle
+                    # BigQueryInsertJobOperator's nested configuration.query.query path
                     try:
                         task_data = _get(env, f"/dags/{dag_id}/tasks/{tid}")
-                        raw_sql = extract_sql(task_data)
+                        sql_file_path = _get_sql_file_path(task_data)
+                        if sql_file_path:
+                            raw_sql = _fetch_sql_file(sql_file_path)
+                        if not raw_sql:
+                            raw_sql = extract_sql(task_data)
                     except Exception:
                         pass
 
@@ -448,12 +455,13 @@ def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
                             ti_detail = _get(env,
                                              f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances/{_enc(tid)}")
                             rendered_sql = _extract_rendered_sql(ti_detail)
+                            rendered_truncated = _rendered_was_truncated(ti_detail)
                             if rendered_sql:
                                 break
                         except Exception:
                             continue
 
-                    best = _best_sql(raw_sql, rendered_sql)
+                    best = _best_sql(raw_sql, rendered_sql, rendered_truncated)
                     if best:
                         dag_info["rendered_sqls"].append({
                             "task_id": tid,

@@ -200,12 +200,40 @@ def _fetch_sql_file(file_path: str) -> str | None:
     return content
 
 
-def _best_sql(raw: str | None, rendered: str | None) -> str | None:
-    """Return the longer of raw and rendered SQL.
-    Airflow truncates rendered_fields, so if rendered is shorter than raw it was cut off."""
+def _best_sql(raw: str | None, rendered: str | None, rendered_truncated: bool = False) -> str | None:
+    """Return the best available SQL.
+    If rendered was Airflow-truncated, always prefer raw (complete template/GCS file).
+    Otherwise pick whichever is longer."""
+    if rendered_truncated and raw:
+        return raw
     if raw and rendered:
         return raw if len(raw) >= len(rendered) else rendered
     return raw or rendered
+
+
+def _get_sql_file_path(task_data: dict) -> str | None:
+    """Extract a .sql file path reference from a task definition dict.
+    Handles top-level sql/query/bql AND BigQueryInsertJobOperator's nested
+    configuration.query.query path."""
+    for key in ("sql", "query", "bql"):
+        val = task_data.get(key)
+        if isinstance(val, str) and val.strip().lower().endswith(".sql"):
+            return val.strip()
+    cfg = task_data.get("configuration")
+    if isinstance(cfg, dict):
+        q = cfg.get("query")
+        if isinstance(q, dict):
+            val = q.get("query")
+            if isinstance(val, str) and val.strip().lower().endswith(".sql"):
+                return val.strip()
+    return None
+
+
+def _rendered_was_truncated(inst: dict) -> bool:
+    """True when Airflow stored rendered_fields as a truncated repr string."""
+    fields = _unwrap_rendered_fields(inst)
+    config_val = fields.get("configuration")
+    return isinstance(config_val, str) and config_val.startswith("Truncated")
 
 
 def _unwrap_rendered_fields(inst: dict) -> dict:
@@ -452,25 +480,25 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
             raw_sql = None
             rendered_sql = None
 
-            # Get raw SQL from task definition
+            # Get raw SQL — use _get_sql_file_path to handle nested BigQuery operator paths
             try:
                 task_data = _get(composer_env, f"/dags/{dag_id}/tasks/{task_id}")
-                raw_sql = extract_sql(task_data)
+                sql_file_path = _get_sql_file_path(task_data)
+                if sql_file_path:
+                    raw_sql = _fetch_sql_file(sql_file_path)
                 if not raw_sql:
-                    for field in ("sql", "query", "bql"):
-                        val = task_data.get(field)
-                        if isinstance(val, str) and val.strip().lower().endswith(".sql"):
-                            raw_sql = _fetch_sql_file(val.strip())
-                            break
+                    raw_sql = extract_sql(task_data)
             except Exception:
                 pass
 
             # Get rendered SQL — walk recent runs until this task is found
+            rendered_truncated = False
             for dag_run in (dag_runs_cache if dag_runs_cache else []):
                 try:
                     ti_detail = _get(composer_env,
                                      f"/dags/{_enc(dag_id)}/dagRuns/{_enc(dag_run['dag_run_id'])}/taskInstances/{_enc(task_id)}")
                     rendered_sql = _extract_rendered_sql(ti_detail)
+                    rendered_truncated = _rendered_was_truncated(ti_detail)
                     if rendered_sql:
                         break
                 except Exception:
@@ -481,7 +509,7 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
                     "task_id": task_id,
                     "operator": operator,
                     "raw_sql": format_sql(raw_sql) if raw_sql else None,
-                    "rendered_sql": format_sql(_best_sql(raw_sql, rendered_sql)),
+                    "rendered_sql": format_sql(_best_sql(raw_sql, rendered_sql, rendered_truncated)),
                 })
 
         log_audit("composer_tools", composer_env, f"dag_rendered_files:{dag_id}",
@@ -558,20 +586,22 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
             if val is not None:
                 debug[f"task_{key}"] = str(val)[:300]
 
-        raw_sql = extract_sql(task_data)
+        # Use _get_sql_file_path to handle both top-level and nested
+        # BigQueryInsertJobOperator configuration.query.query paths.
+        sql_file_path = _get_sql_file_path(task_data)
+        debug["sql_file_path"] = sql_file_path
+
+        raw_sql = None
+        if sql_file_path:
+            raw_sql = _fetch_sql_file(sql_file_path)
+            debug["sql_file_fetched"] = sql_file_path
+            debug["sql_file_found"] = raw_sql is not None
+        if not raw_sql:
+            raw_sql = extract_sql(task_data)
         debug["raw_sql_found"] = raw_sql is not None
 
-        # If raw value is a .sql file path, fetch the file
-        if not raw_sql:
-            for key in ("sql", "query", "bql"):
-                val = task_data.get(key)
-                if isinstance(val, str) and val.strip().lower().endswith(".sql"):
-                    raw_sql = _fetch_sql_file(val.strip())
-                    debug["sql_file_fetched"] = val.strip()
-                    debug["sql_file_found"] = raw_sql is not None
-                    break
-
         rendered_sql = None
+        rendered_truncated = False
         rendered_error = None
         if rendered:
             try:
@@ -603,7 +633,9 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
                             if val is not None:
                                 debug[f"rendered_{key}"] = str(val)[:300]
                     rendered_sql = _extract_rendered_sql(ti_detail)
+                    rendered_truncated = _rendered_was_truncated(ti_detail)
                     debug["rendered_sql_found"] = rendered_sql is not None
+                    debug["rendered_truncated"] = rendered_truncated
                     break  # found a run with this task — stop
             except Exception as e:
                 rendered_error = str(e)
@@ -613,8 +645,7 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
             "dag_id": dag_id,
             "task_id": task_id,
             "raw_sql": format_sql(raw_sql) if raw_sql else None,
-            # If rendered_sql is shorter than raw_sql it was Airflow-truncated — prefer the full raw.
-            "rendered_sql": format_sql(_best_sql(raw_sql, rendered_sql)),
+            "rendered_sql": format_sql(_best_sql(raw_sql, rendered_sql, rendered_truncated)),
             "_debug": debug,
         }
         if rendered_error and not result["rendered_sql"]:
