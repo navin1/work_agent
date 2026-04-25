@@ -33,12 +33,23 @@ def build_system_prompt() -> str:
     else:
         tables_str = "  (none loaded — Excel tools will return empty results, not errors)"
 
+    # Try to surface the Airflow version for the pinned environment
+    airflow_version = "unknown"
+    pinned_env = workspace.get("composer_env", "")
+    if pinned_env:
+        try:
+            info = config.get_composer_info(pinned_env)
+            airflow_version = info.get("airflow_version", "unknown")
+        except Exception:
+            pass
+
     return f"""You are an expert data intelligence assistant with access to tools covering Excel/DuckDB data,
 BigQuery, Cloud Composer DAGs, SQL optimisation, schema introspection, output validation,
 and Git/GCS reconciliation.
 
 PINNED WORKSPACE (use as default for all tool calls unless user specifies otherwise):
   Composer environment: {workspace.get('composer_env', 'not set')}
+  Airflow version: {airflow_version}
   DAG: {workspace.get('dag_id', 'not set')}
   BigQuery project: {workspace.get('bq_project', 'not set')}
 
@@ -130,7 +141,29 @@ COMPOSER / AIRFLOW RULES:
   editor — your text reply MUST be exactly ONE sentence (rule 17 above).
 
 OPTIMISATION RULES:
-- optimise_dag: structural improvements to a DAG (parallelism, dependencies, triggers).
+- optimise_dag: structural improvements to a DAG's Python orchestration layer ONLY.
+  SQL file contents are NEVER modified — only the Airflow Python DAG file changes.
+  DAG optimisation scope (strictly Airflow Python layer):
+    1. STANDARDISATION — apply Airflow best practices for the version shown in PINNED WORKSPACE:
+       • Move heavy imports / DB calls out of global scope to reduce DAG parsing time.
+       • Use TaskGroup for logical task groupings.
+       • Use @task decorator (Airflow 2.x) where appropriate; avoid deprecated patterns.
+       • Replace direct operator kwargs with consistent, named patterns.
+    2. STREAMLINING — remove redundant tasks and unnecessary dependencies:
+       • Collapse no-op / pass-through tasks.
+       • Remove duplicate trigger rules where the default already applies.
+       • Simplify dependency chains without changing execution order.
+    3. VERSION ALIGNMENT — use features available in the Airflow version in PINNED WORKSPACE:
+       • Prefer TaskFlow API decorators if Airflow ≥ 2.0.
+       • Use Dataset-based scheduling if Airflow ≥ 2.4 and applicable.
+       • Do NOT introduce features from a newer Airflow version than what is deployed.
+  HARD CONSTRAINTS (violations make the optimisation invalid):
+    • Task sequence and final data outputs must be identical to the original.
+    • XCom keys and values passed between tasks must remain exactly the same.
+    • SQL file paths and their contents are never touched.
+    • DAG parsing speed must not regress (moving logic to global scope is forbidden).
+  After calling optimise_dag, always state: (a) what structural changes were made,
+  (b) which Airflow version features were applied, and (c) confirm zero functionality change.
 - optimise_all_dag_sqls: optimise every SQL in every task of a DAG at once.
 - optimise_sql_file: optimise a single SQL file by GCS path (gs://...) or Git path.
 - optimise_file: optimise ANY single file (.sql or .py).
