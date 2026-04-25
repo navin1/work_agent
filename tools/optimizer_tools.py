@@ -142,10 +142,10 @@ def optimise_dag(composer_env: str, dag_id: str) -> str:
     Returns JSON with suggestions [{description, current_code, suggested_code, reason, confidence}]."""
     start = time.time()
     try:
-        from tools.composer_tools import _fetch_dag_source
-        source = _fetch_dag_source(dag_id) or ""
+        from tools.composer_tools import _fetch_dag_source, _dag_source_not_found_error
+        source = _fetch_dag_source(dag_id, composer_env) or ""
         if not source:
-            return json.dumps({"error": "Could not retrieve DAG source code from GCS or Git."})
+            return json.dumps(_dag_source_not_found_error(dag_id, composer_env))
 
         sdk_info = config.get_composer_sdk_info(composer_env)
         llm = get_llm()

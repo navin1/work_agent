@@ -312,12 +312,38 @@ def _extract_rendered_sql(inst: dict) -> str | None:
     return None
 
 
-def _fetch_dag_source(dag_id: str) -> str | None:
-    """Fetch DAG source from GCS (with subfolder search) then Git fallback."""
+def _fetch_dag_source_airflow_api(dag_id: str, composer_env: str) -> str | None:
+    """Fetch DAG source via Airflow REST API: GET /dags/{dag_id} → file_token → GET /dagSources/{file_token}."""
+    try:
+        dag_meta = _get(composer_env, f"/dags/{dag_id}")
+        file_token = dag_meta.get("file_token")
+        if not file_token:
+            return None
+        source_resp = _get(composer_env, f"/dagSources/{file_token}")
+        # Airflow returns {"content": "...source..."} for Accept: application/json
+        if isinstance(source_resp, dict) and "content" in source_resp:
+            return source_resp["content"]
+        if isinstance(source_resp, str) and len(source_resp) > 10:
+            return source_resp
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_dag_source(dag_id: str, composer_env: str = None) -> str | None:
+    """Fetch DAG source. Priority: Airflow REST API → GCS → Git.
+    Returns (source, attempted_sources) where attempted_sources is a list of
+    what was tried, for diagnostic error messages."""
+    # 1. Airflow REST API (most reliable — uses existing auth, no extra config)
+    if composer_env:
+        source = _fetch_dag_source_airflow_api(dag_id, composer_env)
+        if source:
+            return source
+    # 2. GCS bucket search
     source = _fetch_dag_source_gcs(dag_id)
     if source:
         return source
-    # Try git paths
+    # 3. Git
     for root in config.GIT_ROOT_PATHS:
         content = _fetch_file_from_git(f"{root}{dag_id}.py")
         if content:
@@ -330,13 +356,35 @@ def _fetch_dag_source(dag_id: str) -> str | None:
                 if tree_resp.status_code == 200:
                     for item in tree_resp.json().get("tree", []):
                         item_path = item.get("path", "")
-                        if item_path.endswith(f"/{dag_id}.py") or item_path.endswith(f"/{dag_id}.py"):
+                        if item_path.endswith(f"/{dag_id}.py"):
                             content = _fetch_file_from_git(item_path)
                             if content:
                                 return content
         except Exception:
             pass
     return None
+
+
+def _dag_source_not_found_error(dag_id: str, composer_env: str) -> dict:
+    """Return a structured error dict explaining why DAG source could not be fetched."""
+    gcs_buckets = config.GCS_BUCKETS or []
+    git_repo    = config.GIT_REPO or "(not set)"
+    git_token   = bool(config.GIT_API_TOKEN and config.GIT_API_TOKEN != "ghp_xxx")
+    dag_folder  = config.DAG_FOLDER or "(not set)"
+    return {
+        "error": f"Could not retrieve source for DAG '{dag_id}' in '{composer_env}'.",
+        "diagnosis": {
+            "airflow_api": "Tried /dags/{dag_id} → /dagSources/{file_token} — failed (check Airflow API access)",
+            "gcs": f"Searched buckets: {gcs_buckets} under DAG_FOLDER='{dag_folder}' for '{dag_id}.py'",
+            "git": f"Repo: {git_repo}, token_set: {git_token}, paths: {config.GIT_ROOT_PATHS}",
+        },
+        "fix": (
+            "Ensure at least one source is reachable: "
+            "(1) Airflow API — verify composer_env URL and credentials; "
+            "(2) GCS — set GCS_BUCKETS and DAG_FOLDER in .env to the actual Composer DAG bucket; "
+            "(3) Git — set GIT_REPO, GIT_API_TOKEN, GIT_BRANCH, GIT_ROOT_PATHS in .env."
+        ),
+    }
 
 
 # ── Composer list tool ────────────────────────────────────────────────────────
@@ -436,7 +484,7 @@ def get_dag_details(composer_env: str, dag_id: str) -> str:
                 "depends_on": t.get("downstream_task_ids", []),
             })
 
-        dag_source = _fetch_dag_source(dag_id) or "(source not available)"
+        dag_source = _fetch_dag_source(dag_id, composer_env) or "(source not available)"
 
         log_audit("composer_tools", composer_env, f"dag_details:{dag_id}",
                   duration_ms=int((time.time()-start)*1000))
@@ -471,7 +519,7 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
         except Exception:
             pass
 
-        dag_source = _fetch_dag_source(dag_id) or "(source not available)"
+        dag_source = _fetch_dag_source(dag_id, composer_env) or "(source not available)"
 
         tasks_sql = []
         for t in tasks:
@@ -1069,7 +1117,7 @@ def get_dag_snapshot_diff(composer_env: str, dag_id: str) -> str:
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         snapshot_path = snapshot_dir / f"{composer_env}_{dag_id}.py"
 
-        current_source = _fetch_dag_source(dag_id) or ""
+        current_source = _fetch_dag_source(dag_id, composer_env) or ""
         snapshot_date = None
         unified_diff = ""
         has_changes = False
