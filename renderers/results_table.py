@@ -83,9 +83,10 @@ def render_task_sql(raw_json: str) -> None:
     task_id = data.get("task_id", "")
     label   = "Rendered SQL" if data.get("rendered_sql") else "Raw SQL (no successful run found)"
 
-    st.markdown(f"**{label}** — `{dag_id}` / `{task_id}`")
     lines  = sql.count("\n") + 1
-    height = max(300, lines * 22 + 60)
+    # Cap at 900px so massive SQL doesn't inflate the page — Monaco scrolls internally.
+    height = min(max(300, lines * 22 + 60), 900)
+    st.caption(f"**{label}** — `{dag_id}` / `{task_id}`  ·  {lines:,} lines")
     components.html(monaco.editor(sql, language="sql", height=height), height=height + 20)
 
 
@@ -118,7 +119,8 @@ def render_dag_rendered_files(raw_json: str) -> None:
         with st.expander(f"`{tid}`  —  {op}  ({label})", expanded=False):
             if sql:
                 lines  = sql.count("\n") + 1
-                height = max(280, lines * 22 + 60)
+                height = min(max(280, lines * 22 + 60), 900)
+                st.caption(f"{lines:,} lines")
                 components.html(monaco.editor(sql, language="sql", height=height), height=height + 20)
             else:
                 st.info("No SQL found for this task.")

@@ -418,37 +418,46 @@ def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
                         "duration_seconds": state_info.get("duration_seconds"),
                     })
 
-                # Rendered SQL for each task
-                success_run_id = None
+                # Rendered SQL for each task — use same approach as get_task_sql
+                from tools.composer_tools import (  # noqa: PLC0415
+                    _extract_rendered_sql, _best_sql, _enc,
+                )
+                success_runs_list = []
                 try:
                     success_runs = _get(env, f"/dags/{dag_id}/dagRuns",
-                                        {"limit": 5, "order_by": "-start_date", "state": "success"})
-                    if success_runs.get("dag_runs"):
-                        success_run_id = success_runs["dag_runs"][0]["dag_run_id"]
+                                        {"limit": 10, "order_by": "-execution_date", "state": "success"})
+                    success_runs_list = success_runs.get("dag_runs", [])
                 except Exception:
                     pass
 
                 for tid in task_defs:
-                    sql = None
-                    # Try rendered fields first (Jinja-resolved values)
-                    if success_run_id:
+                    raw_sql = None
+                    rendered_sql = None
+
+                    # Raw SQL from task definition (never truncated)
+                    try:
+                        task_data = _get(env, f"/dags/{dag_id}/tasks/{tid}")
+                        raw_sql = extract_sql(task_data)
+                    except Exception:
+                        pass
+
+                    # Rendered SQL — walk recent runs until this task instance is found
+                    for dag_run in success_runs_list:
+                        run_id = dag_run["dag_run_id"]
                         try:
-                            inst = _get(env,
-                                        f"/dags/{dag_id}/dagRuns/{success_run_id}/taskInstances/{tid}/renderedFields")
-                            sql = extract_sql(inst)
+                            ti_detail = _get(env,
+                                             f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances/{_enc(tid)}")
+                            rendered_sql = _extract_rendered_sql(ti_detail)
+                            if rendered_sql:
+                                break
                         except Exception:
-                            pass
-                    # Fallback to raw task definition
-                    if not sql:
-                        try:
-                            task_data = _get(env, f"/dags/{dag_id}/tasks/{tid}")
-                            sql = extract_sql(task_data)
-                        except Exception:
-                            pass
-                    if sql:
+                            continue
+
+                    best = _best_sql(raw_sql, rendered_sql)
+                    if best:
                         dag_info["rendered_sqls"].append({
                             "task_id": tid,
-                            "rendered_sql": format_sql(sql),
+                            "rendered_sql": format_sql(best),
                         })
 
             except Exception as e:

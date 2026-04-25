@@ -42,9 +42,8 @@ _NODE_COLORS = {
 # ── Formatting helpers ────────────────────────────────────────────────────────
 
 def _sql_height(sql: str) -> int:
-    """Monaco container height that fits the full SQL without internal scrolling."""
     lines = sql.count("\n") + 1
-    return max(300, lines * 22 + 60)
+    return min(max(300, lines * 22 + 60), 900)
 
 
 def _fmt_dur(secs) -> str:

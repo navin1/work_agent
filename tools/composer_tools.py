@@ -200,6 +200,14 @@ def _fetch_sql_file(file_path: str) -> str | None:
     return content
 
 
+def _best_sql(raw: str | None, rendered: str | None) -> str | None:
+    """Return the longer of raw and rendered SQL.
+    Airflow truncates rendered_fields, so if rendered is shorter than raw it was cut off."""
+    if raw and rendered:
+        return raw if len(raw) >= len(rendered) else rendered
+    return raw or rendered
+
+
 def _unwrap_rendered_fields(inst: dict) -> dict:
     """Normalise renderedFields API response across Airflow versions.
     Airflow 2.5+ nests rendered values under a 'rendered_fields' key."""
@@ -233,8 +241,17 @@ def _extract_sql_from_truncated_config(s: str) -> str | None:
         if idx == -1:
             continue
         sql_raw = s[idx + len(marker):]
-        # Unescape \\n → newline, \\t → tab, \\' → '
-        sql_raw = sql_raw.replace("\\n", "\n").replace("\\t", "\t").replace("\\'", "'")
+        # Unescape Airflow repr sequences (post-JSON-parse byte values):
+        #   \\\\n in JSON source → \\n in Python memory (3 chars) → actual newline
+        #   \\\\t in JSON source → \\t in Python memory (3 chars) → actual tab
+        #   \\'   in JSON source → \'  in Python memory (2 chars) → '
+        sql_raw = (sql_raw
+                   .replace("\\\\n", "\n")   # \\n  → newline
+                   .replace("\\\\t", "\t")   # \\t  → tab
+                   .replace("\\'", "'")       # \'   → '
+                   .replace('\\"', '"')       # \"   → "
+                   .replace("\\\\", "\\")    # \\   → \ (remaining double-backslashes)
+                   )
         # Strip trailing closing quote + truncation ellipsis  e.g.  '...  or  s'...
         sql_raw = re.sub(re.escape(end_quote) + r"\s*\.\.\.\s*$", "", sql_raw).strip()
         sql_raw = re.sub(r"\s*\.\.\.\s*$", "", sql_raw).strip()
@@ -464,7 +481,7 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
                     "task_id": task_id,
                     "operator": operator,
                     "raw_sql": format_sql(raw_sql) if raw_sql else None,
-                    "rendered_sql": format_sql(rendered_sql) if rendered_sql else (format_sql(raw_sql) if raw_sql else None),
+                    "rendered_sql": format_sql(_best_sql(raw_sql, rendered_sql)),
                 })
 
         log_audit("composer_tools", composer_env, f"dag_rendered_files:{dag_id}",
@@ -596,7 +613,8 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
             "dag_id": dag_id,
             "task_id": task_id,
             "raw_sql": format_sql(raw_sql) if raw_sql else None,
-            "rendered_sql": format_sql(rendered_sql) if rendered_sql else (format_sql(raw_sql) if raw_sql else None),
+            # If rendered_sql is shorter than raw_sql it was Airflow-truncated — prefer the full raw.
+            "rendered_sql": format_sql(_best_sql(raw_sql, rendered_sql)),
             "_debug": debug,
         }
         if rendered_error and not result["rendered_sql"]:
