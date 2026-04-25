@@ -129,6 +129,74 @@ def _fetch_file_from_git(file_path: str) -> str | None:
         return None
 
 
+def _fetch_sql_file(file_path: str) -> str | None:
+    """Fetch a .sql (or any) file from GCS buckets then Git, given a relative path like 'sql/foo/bar.sql'."""
+    # Try GCS buckets
+    try:
+        from google.cloud import storage
+        from core.auth import get_credentials
+        creds, _ = get_credentials()
+        client = storage.Client(credentials=creds)
+        dag_folder = config.DAG_FOLDER.strip() if config.DAG_FOLDER else ""
+        search_prefixes = []
+        if dag_folder:
+            for folder in dag_folder.split(","):
+                folder = folder.strip().rstrip("/")
+                if folder:
+                    # SQL files often live alongside DAGs or one level up
+                    search_prefixes.append(folder + "/")
+                    parent = folder.rsplit("/", 1)[0] if "/" in folder else ""
+                    if parent:
+                        search_prefixes.append(parent + "/")
+        if not search_prefixes:
+            search_prefixes = config.GCS_PREFIXES or [""]
+        for bucket_name in config.GCS_BUCKETS:
+            bucket = client.bucket(bucket_name)
+            # Try the path as-is (relative to each search root)
+            for prefix in search_prefixes + [""]:
+                candidate = (prefix + file_path).lstrip("/")
+                try:
+                    blob = bucket.blob(candidate)
+                    if blob.exists():
+                        return blob.download_as_text()
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    # Try Git
+    for root in config.GIT_ROOT_PATHS:
+        content = _fetch_file_from_git(f"{root}{file_path}")
+        if content:
+            return content
+    content = _fetch_file_from_git(file_path)
+    return content
+
+
+def _unwrap_rendered_fields(inst: dict) -> dict:
+    """Normalise renderedFields API response across Airflow versions.
+    Airflow 2.5+ nests rendered values under a 'rendered_fields' key."""
+    if isinstance(inst.get("rendered_fields"), dict):
+        return inst["rendered_fields"]
+    return inst
+
+
+def _extract_rendered_sql(inst: dict) -> str | None:
+    """Extract SQL from a renderedFields API response.
+    Handles nested 'rendered_fields' wrapper and .sql file-path references."""
+    fields = _unwrap_rendered_fields(inst)
+    sql = extract_sql(fields)
+    if sql:
+        return sql
+    # If a field value is a .sql file path, fetch the file
+    for key in ("sql", "query", "bql"):
+        val = fields.get(key)
+        if isinstance(val, str) and val.strip().lower().endswith(".sql"):
+            content = _fetch_sql_file(val.strip())
+            if content:
+                return content
+    return None
+
+
 def _fetch_dag_source(dag_id: str) -> str | None:
     """Fetch DAG source from GCS (with subfolder search) then Git fallback."""
     source = _fetch_dag_source_gcs(dag_id)
@@ -301,11 +369,13 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
             # Get raw SQL from task definition
             try:
                 task_data = _get(composer_env, f"/dags/{dag_id}/tasks/{task_id}")
-                for field in ["sql", "query", "bql"]:
-                    val = task_data.get(field) or task_data.get("template_fields", {}).get(field)
-                    if val and str(val).strip():
-                        raw_sql = str(val)
-                        break
+                raw_sql = extract_sql(task_data)
+                if not raw_sql:
+                    for field in ("sql", "query", "bql"):
+                        val = task_data.get(field)
+                        if isinstance(val, str) and val.strip().lower().endswith(".sql"):
+                            raw_sql = _fetch_sql_file(val.strip())
+                            break
             except Exception:
                 pass
 
@@ -314,10 +384,7 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
                 try:
                     inst = _get(composer_env,
                                 f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id}/renderedFields")
-                    for field in ["sql", "query", "bql"]:
-                        if inst.get(field) and str(inst[field]).strip():
-                            rendered_sql = str(inst[field])
-                            break
+                    rendered_sql = _extract_rendered_sql(inst)
                 except Exception:
                     pass
 
@@ -395,6 +462,14 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
         task_data = _get(composer_env, f"/dags/{dag_id}/tasks/{task_id}")
         raw_sql = extract_sql(task_data)
 
+        # If raw value is a .sql file path, fetch the file
+        if not raw_sql:
+            for key in ("sql", "query", "bql"):
+                val = task_data.get(key)
+                if isinstance(val, str) and val.strip().lower().endswith(".sql"):
+                    raw_sql = _fetch_sql_file(val.strip())
+                    break
+
         rendered_sql = None
         if rendered:
             try:
@@ -405,7 +480,7 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
                     run_id = runs_data["dag_runs"][0]["dag_run_id"]
                     inst = _get(composer_env,
                                 f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id}/renderedFields")
-                    rendered_sql = extract_sql(inst)
+                    rendered_sql = _extract_rendered_sql(inst)
             except Exception:
                 pass
 
