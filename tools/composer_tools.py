@@ -248,15 +248,15 @@ def list_composers() -> str:
                 "python_version": info["python_version"],
             })
         if not result:
-            return json.dumps({
+            return safe_json({
                 "composers": [],
                 "count": 0,
                 "note": "No Composer environments configured. Set COMPOSER_ENVS in .env file.",
             })
         log_audit("composer_tools", "config", "list_composers", row_count=len(result))
-        return json.dumps({"composers": result, "count": len(result)})
+        return safe_json({"composers": result, "count": len(result)})
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return safe_json({"error": str(exc)})
 
 
 # ── DAG listing ───────────────────────────────────────────────────────────────
@@ -298,14 +298,14 @@ def list_dags(composer_env: str, tag_filter: str = None, subfolder_filter: str =
         airflow_url = config.get_composer_info(composer_env).get("airflow_url", "")
         log_audit("composer_tools", composer_env, "list_dags", row_count=len(dags),
                   duration_ms=int((time.time()-start)*1000))
-        return json.dumps({
+        return safe_json({
             "composer_env": composer_env,
             "airflow_url": airflow_url,
             "dags": dags,
             "count": len(dags),
         })
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return safe_json({"error": str(exc)})
 
 
 # ── DAG details + rendered files ──────────────────────────────────────────────
@@ -331,14 +331,14 @@ def get_dag_details(composer_env: str, dag_id: str) -> str:
 
         log_audit("composer_tools", composer_env, f"dag_details:{dag_id}",
                   duration_ms=int((time.time()-start)*1000))
-        return json.dumps({
+        return safe_json({
             "dag_id": dag_id,
             "dag_source": dag_source,
             "tasks": tasks,
             "file_loc": dag_data.get("file_loc", ""),
         }, default=str)
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return safe_json({"error": str(exc)})
 
 
 @tool
@@ -411,7 +411,7 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
 
         log_audit("composer_tools", composer_env, f"dag_rendered_files:{dag_id}",
                   row_count=len(tasks_sql), duration_ms=int((time.time()-start)*1000))
-        return json.dumps({
+        return safe_json({
             "dag_id": dag_id,
             "dag_source": dag_source,
             "last_run_id": run_id,
@@ -419,7 +419,7 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
             "tasks_sql": tasks_sql,
         }, default=str)
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return safe_json({"error": str(exc)})
 
 
 # ── Run history ───────────────────────────────────────────────────────────────
@@ -457,9 +457,9 @@ def get_dag_run_history(composer_env: str, dag_id: str, limit: int = 10) -> str:
             })
         log_audit("composer_tools", composer_env, f"run_history:{dag_id}",
                   row_count=len(runs), duration_ms=int((time.time()-start)*1000))
-        return json.dumps({"dag_id": dag_id, "runs": runs})
+        return safe_json({"dag_id": dag_id, "runs": runs})
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return safe_json({"error": str(exc)})
 
 
 # ── Task SQL ──────────────────────────────────────────────────────────────────
@@ -561,9 +561,9 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
             result["rendered_warning"] = rendered_error
         log_audit("composer_tools", composer_env, f"task_sql:{dag_id}/{task_id}",
                   duration_ms=int((time.time()-start)*1000))
-        return json.dumps(result)
+        return safe_json(result)
     except Exception as exc:
-        return json.dumps({"error": str(exc), "_debug": debug})
+        return safe_json({"error": str(exc), "_debug": debug})
 
 
 # ── Task performance ──────────────────────────────────────────────────────────
@@ -627,9 +627,9 @@ def get_task_performance(composer_env: str, dag_id: str, task_id: str = None, li
 
         log_audit("composer_tools", composer_env, f"task_perf:{dag_id}",
                   duration_ms=int((time.time()-start)*1000))
-        return json.dumps({"dag_id": dag_id, "performance": matrix})
+        return safe_json({"dag_id": dag_id, "performance": matrix})
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return safe_json({"error": str(exc)})
 
 
 # ── Execution logs ────────────────────────────────────────────────────────────
@@ -668,9 +668,9 @@ def get_error_logs(composer_env: str, dag_id: str, run_id: str, task_id: str = N
 
         log_audit("composer_tools", composer_env, f"error_logs:{dag_id}/{run_id}",
                   duration_ms=int((time.time()-start)*1000))
-        return json.dumps({"dag_id": dag_id, "run_id": run_id, "failed_tasks": logs_out})
+        return safe_json({"dag_id": dag_id, "run_id": run_id, "failed_tasks": logs_out})
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return safe_json({"error": str(exc)})
 
 
 @tool
@@ -710,7 +710,7 @@ def get_execution_log(composer_env: str, dag_id: str, run_id: str = None, task_i
                 })
             log_audit("composer_tools", composer_env, f"exec_log_dag:{dag_id}",
                       duration_ms=int((time.time()-start)*1000))
-            return json.dumps({"level": "dag", "dag_id": dag_id, "runs": runs})
+            return safe_json({"level": "dag", "dag_id": dag_id, "runs": runs})
 
         # Level 2: run_id provided — list all task instances
         if not task_id:
@@ -739,7 +739,7 @@ def get_execution_log(composer_env: str, dag_id: str, run_id: str = None, task_i
                 })
             log_audit("composer_tools", composer_env, f"exec_log_run:{dag_id}/{run_id}",
                       duration_ms=int((time.time()-start)*1000))
-            return json.dumps({
+            return safe_json({
                 "level": "run",
                 "dag_id": dag_id,
                 "run_id": run_id,
@@ -757,7 +757,7 @@ def get_execution_log(composer_env: str, dag_id: str, run_id: str = None, task_i
         error_lines = [l for l in lines if any(k in l for k in ("ERROR", "Traceback", "Exception", "CRITICAL"))]
         log_audit("composer_tools", composer_env, f"exec_log_task:{dag_id}/{run_id}/{task_id}",
                   duration_ms=int((time.time()-start)*1000))
-        return json.dumps({
+        return safe_json({
             "level": "task",
             "dag_id": dag_id,
             "run_id": run_id,
@@ -772,7 +772,7 @@ def get_execution_log(composer_env: str, dag_id: str, run_id: str = None, task_i
             "log_line_count": len(lines),
         })
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return safe_json({"error": str(exc)})
 
 
 # ── Airflow jobs (DAG runs) ───────────────────────────────────────────────────
@@ -829,14 +829,14 @@ def list_airflow_jobs(composer_env: str, dag_id: str = None, limit: int = 20) ->
 
         log_audit("composer_tools", composer_env, f"list_airflow_jobs:{dag_id or 'all'}",
                   row_count=len(all_jobs), duration_ms=int((time.time()-start)*1000))
-        return json.dumps({
+        return safe_json({
             "composer_env": composer_env,
             "dag_id_filter": dag_id,
             "jobs": all_jobs,
             "count": len(all_jobs),
         })
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return safe_json({"error": str(exc)})
 
 
 # ── Task graph ────────────────────────────────────────────────────────────────
@@ -917,7 +917,7 @@ def get_dag_task_graph(composer_env: str, dag_id: str, run_id: str = None) -> st
 
         log_audit("composer_tools", composer_env, f"task_graph:{dag_id}",
                   row_count=len(tasks), duration_ms=int((time.time()-start)*1000))
-        return json.dumps({
+        return safe_json({
             "dag_id": dag_id,
             "run_id": run_id,
             "run_state": run_state,
@@ -927,7 +927,7 @@ def get_dag_task_graph(composer_env: str, dag_id: str, run_id: str = None) -> st
             "diagram": diagram,
         }, default=str)
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return safe_json({"error": str(exc)})
 
 
 def _build_task_diagram(task_defs: dict) -> str:
@@ -1002,11 +1002,11 @@ def get_dag_snapshot_diff(composer_env: str, dag_id: str) -> str:
 
         log_audit("composer_tools", composer_env, f"snapshot_diff:{dag_id}",
                   duration_ms=int((time.time()-start)*1000))
-        return json.dumps({
+        return safe_json({
             "dag_id": dag_id,
             "has_changes": has_changes,
             "unified_diff": unified_diff,
             "snapshot_date": snapshot_date,
         })
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return safe_json({"error": str(exc)})

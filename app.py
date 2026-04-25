@@ -303,6 +303,15 @@ def dispatch_renderers(agent_output: dict) -> None:
     if "get_task_sql" in tools_called:
         _rt.render_task_sql(tools_called["get_task_sql"])
 
+    if "get_dag_rendered_files" in tools_called:
+        _rt.render_dag_rendered_files(tools_called["get_dag_rendered_files"])
+
+    if "get_dag_task_graph" in tools_called:
+        _rt.render_dag_task_graph(tools_called["get_dag_task_graph"])
+
+    if "get_dag_details" in tools_called:
+        _rt.render_dag_details(tools_called["get_dag_details"])
+
     if "query_bigquery" in tools_called or "query_excel_data" in tools_called:
         source = "query_bigquery" if "query_bigquery" in tools_called else "query_excel_data"
         _rt.render(tools_called[source], agent=st.session_state.agent)

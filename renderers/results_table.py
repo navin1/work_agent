@@ -89,6 +89,128 @@ def render_task_sql(raw_json: str) -> None:
     components.html(monaco.editor(sql, language="sql", height=height), height=height + 20)
 
 
+def render_dag_rendered_files(raw_json: str) -> None:
+    import streamlit.components.v1 as components
+    from core import monaco
+
+    try:
+        data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+    except Exception:
+        st.error("Could not parse DAG rendered files result.")
+        return
+
+    if "error" in data:
+        st.error(f"DAG rendered files error: {data['error']}")
+        return
+
+    dag_id = data.get("dag_id", "")
+    tasks_sql = data.get("tasks_sql", [])
+    if not tasks_sql:
+        st.info(f"No SQL-bearing tasks found in **{dag_id}**.")
+        return
+
+    st.caption(f"**{len(tasks_sql)}** task(s) with SQL in **{dag_id}**")
+    for t in tasks_sql:
+        tid = t.get("task_id", "")
+        op  = t.get("operator", "")
+        sql = t.get("rendered_sql") or t.get("raw_sql") or ""
+        label = "Rendered SQL" if t.get("rendered_sql") else "Raw SQL"
+        with st.expander(f"`{tid}`  —  {op}  ({label})", expanded=False):
+            if sql:
+                lines  = sql.count("\n") + 1
+                height = max(280, lines * 22 + 60)
+                components.html(monaco.editor(sql, language="sql", height=height), height=height + 20)
+            else:
+                st.info("No SQL found for this task.")
+
+
+def render_dag_task_graph(raw_json: str) -> None:
+    try:
+        data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+    except Exception:
+        st.error("Could not parse task graph result.")
+        return
+
+    if "error" in data:
+        st.error(f"Task graph error: {data['error']}")
+        return
+
+    dag_id    = data.get("dag_id", "")
+    run_id    = data.get("run_id", "—")
+    run_state = data.get("run_state", "")
+    tasks     = data.get("tasks", [])
+
+    STATE_ICON = {
+        "success": "✅", "failed": "❌", "running": "🔄",
+        "skipped": "⏭", "upstream_failed": "⚠️", "queued": "⏳",
+    }
+    rows = [
+        {
+            "Task": t.get("task_id", ""),
+            "Operator": t.get("operator", "").replace("Operator", ""),
+            "State": STATE_ICON.get(t.get("state", ""), "○") + " " + (t.get("state") or "—"),
+            "Duration (s)": round(t["duration_seconds"], 1) if t.get("duration_seconds") else "—",
+            "Try": t.get("try_number") or "—",
+            "Depends On": ", ".join(t.get("depends_on") or []) or "—",
+        }
+        for t in tasks
+    ]
+    df = pd.DataFrame(rows)
+
+    state_label = f"  ·  Run state: **{run_state}**" if run_state else ""
+    st.caption(f"**{dag_id}**  ·  run: `{run_id}`{state_label}")
+    st.dataframe(df, hide_index=True, use_container_width=True)
+
+    diagram = data.get("diagram", "")
+    if diagram:
+        with st.expander("Dependency diagram", expanded=False):
+            st.code(diagram, language=None)
+
+    col1, _ = st.columns([1, 5])
+    with col1:
+        buf = io.StringIO()
+        df.to_csv(buf, index=False)
+        st.download_button("⬇ CSV", buf.getvalue(), f"{dag_id}_tasks.csv",
+                           mime="text/csv", key=f"tg_csv_{id(raw_json)}")
+
+
+def render_dag_details(raw_json: str) -> None:
+    import streamlit.components.v1 as components
+    from core import monaco
+
+    try:
+        data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+    except Exception:
+        st.error("Could not parse DAG details result.")
+        return
+
+    if "error" in data:
+        st.error(f"DAG details error: {data['error']}")
+        return
+
+    dag_id = data.get("dag_id", "")
+    tasks  = data.get("tasks", [])
+    source = data.get("dag_source", "")
+
+    if tasks:
+        rows = [
+            {
+                "Task": t.get("task_id", ""),
+                "Operator": t.get("operator", "").replace("Operator", ""),
+                "Depends On": ", ".join(t.get("depends_on") or []) or "—",
+            }
+            for t in tasks
+        ]
+        st.caption(f"**{dag_id}**  ·  {len(tasks)} task(s)")
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+    if source and source != "(source not available)":
+        with st.expander("DAG source", expanded=False):
+            lines  = source.count("\n") + 1
+            height = max(300, min(lines * 18 + 40, 800))
+            components.html(monaco.editor(source, language="python", height=height), height=height + 20)
+
+
 def render(raw_json: str, agent=None) -> None:
     try:
         data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
