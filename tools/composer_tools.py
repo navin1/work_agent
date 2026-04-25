@@ -464,9 +464,20 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
     If rendered=True, resolves Jinja using last successful run logical_date.
     Auto-formats with sqlglot. Returns JSON with raw_sql, rendered_sql."""
     start = time.time()
+    debug: dict = {}
     try:
-        task_data = _get(composer_env, f"/dags/{dag_id}/tasks/{task_id}")
+        _task_path = f"/dags/{dag_id}/tasks/{task_id}"
+        debug["url_task_definition"] = _base_url(composer_env) + _task_path
+        task_data = _get(composer_env, _task_path)
+        debug["task_keys"] = list(task_data.keys()) if isinstance(task_data, dict) else str(type(task_data))
+        # Surface the raw template field values for diagnosis
+        for key in ("sql", "query", "bql", "configuration"):
+            val = task_data.get(key)
+            if val is not None:
+                debug[f"task_{key}"] = str(val)[:300]
+
         raw_sql = extract_sql(task_data)
+        debug["raw_sql_found"] = raw_sql is not None
 
         # If raw value is a .sql file path, fetch the file
         if not raw_sql:
@@ -474,33 +485,61 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
                 val = task_data.get(key)
                 if isinstance(val, str) and val.strip().lower().endswith(".sql"):
                     raw_sql = _fetch_sql_file(val.strip())
+                    debug["sql_file_fetched"] = val.strip()
+                    debug["sql_file_found"] = raw_sql is not None
                     break
 
         rendered_sql = None
+        rendered_error = None
         if rendered:
             try:
-                runs_data = _get(composer_env, f"/dags/{dag_id}/dagRuns", {
+                _runs_path = f"/dags/{dag_id}/dagRuns"
+                debug["url_dag_runs"] = _base_url(composer_env) + _runs_path + "?limit=10&order_by=-start_date&state=success"
+                runs_data = _get(composer_env, _runs_path, {
                     "limit": 10, "order_by": "-start_date", "state": "success"
                 })
-                if runs_data.get("dag_runs"):
-                    run_id = runs_data["dag_runs"][0]["dag_run_id"]
-                    inst = _get(composer_env,
-                                f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances/{_enc(task_id)}/renderedFields")
+                dag_runs = runs_data.get("dag_runs", [])
+                debug["successful_runs"] = len(dag_runs)
+                if dag_runs:
+                    run_id = dag_runs[0]["dag_run_id"]
+                    debug["run_id_used"] = run_id
+                    _rf_path = f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances/{_enc(task_id)}/renderedFields"
+                    debug["url_rendered_fields"] = _base_url(composer_env) + _rf_path
+                    inst = _get(composer_env, _rf_path)
+                    debug["rendered_fields_keys"] = list(inst.keys()) if isinstance(inst, dict) else str(type(inst))
+                    rf = inst.get("rendered_fields")
+                    if isinstance(rf, dict):
+                        debug["rendered_fields_inner_keys"] = list(rf.keys())
+                        for key in ("sql", "query", "bql", "configuration"):
+                            val = rf.get(key)
+                            if val is not None:
+                                debug[f"rendered_{key}"] = str(val)[:300]
+                    else:
+                        # flat response — surface top-level field values
+                        for key in ("sql", "query", "bql", "configuration"):
+                            val = inst.get(key)
+                            if val is not None:
+                                debug[f"rendered_{key}"] = str(val)[:300]
                     rendered_sql = _extract_rendered_sql(inst)
-            except Exception:
-                pass
+                    debug["rendered_sql_found"] = rendered_sql is not None
+            except Exception as e:
+                rendered_error = str(e)
+                debug["rendered_error"] = rendered_error
 
         result = {
             "dag_id": dag_id,
             "task_id": task_id,
             "raw_sql": format_sql(raw_sql) if raw_sql else None,
             "rendered_sql": format_sql(rendered_sql) if rendered_sql else (format_sql(raw_sql) if raw_sql else None),
+            "_debug": debug,
         }
+        if rendered_error and not result["rendered_sql"]:
+            result["rendered_warning"] = rendered_error
         log_audit("composer_tools", composer_env, f"task_sql:{dag_id}/{task_id}",
                   duration_ms=int((time.time()-start)*1000))
         return json.dumps(result)
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return json.dumps({"error": str(exc), "_debug": debug})
 
 
 # ── Task performance ──────────────────────────────────────────────────────────

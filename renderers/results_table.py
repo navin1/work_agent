@@ -70,7 +70,13 @@ def render_task_sql(raw_json: str) -> None:
 
     sql = data.get("rendered_sql") or data.get("raw_sql")
     if not sql:
-        st.info("No SQL found for this task.")
+        st.warning("No SQL found for this task.")
+        if data.get("rendered_warning"):
+            st.error(f"Rendered fields error: {data['rendered_warning']}")
+        debug = data.get("_debug", {})
+        if debug:
+            with st.expander("🔍 Diagnosis"):
+                st.json(debug)
         return
 
     dag_id  = data.get("dag_id", "")
