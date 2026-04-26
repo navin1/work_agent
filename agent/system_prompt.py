@@ -2,7 +2,7 @@
 from core import config, persistence
 from core.workspace import get_pinned_workspace
 
-_PROMPT_VERSION = "v5"
+_PROMPT_VERSION = "v6"
 
 
 def _list_loaded_tables_internal() -> list[dict]:

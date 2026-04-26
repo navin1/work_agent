@@ -265,7 +265,8 @@ def _render_doc_md_panel(doc_md: dict, dag_id: str) -> None:
 
 
 def render_dag_suggestions(raw_json: str) -> None:
-    """Render optimise_dag result: doc_md panel + DAG structural improvement suggestions."""
+    """Render optimise_dag result: doc_md panel + optimised file diff + suggestions."""
+    global _render_count
     try:
         data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
     except Exception:
@@ -276,7 +277,13 @@ def render_dag_suggestions(raw_json: str) -> None:
         st.error(f"DAG optimisation error: {data['error']}")
         return
 
-    dag_id = data.get("dag_id", "")
+    _render_count += 1
+    uid = str(_render_count)
+
+    dag_id      = data.get("dag_id", "")
+    original    = data.get("original_content", "")
+    optimised   = data.get("optimised_content", "")
+    export_path = data.get("export_path", "")
     suggestions = data.get("suggestions", [])
     if isinstance(suggestions, dict):
         suggestions = suggestions.get("suggestions", [])
@@ -284,13 +291,59 @@ def render_dag_suggestions(raw_json: str) -> None:
 
     st.subheader(f"DAG Optimisation: {dag_id}")
 
-    # Doc MD panel — always render (overview and control_m_job derived from dag_id if absent)
+    # ── Doc MD panel ─────────────────────────────────────────────────────────
     _render_doc_md_panel(doc_md, dag_id)
     st.divider()
 
-    # Suggestions
+    # ── Optimised file view ───────────────────────────────────────────────────
+    if optimised:
+        if export_path:
+            st.download_button(
+                label=f"⬇ Download {Path(export_path).name}",
+                data=optimised.encode("utf-8"),
+                file_name=Path(export_path).name,
+                mime="text/plain",
+                type="primary",
+                key=f"dl_dag_{uid}",
+            )
+
+        tab_diff, tab_side = st.tabs(["Diff", "Side-by-Side"])
+
+        with tab_diff:
+            diff_lines = list(difflib.unified_diff(
+                original.splitlines(keepends=True),
+                optimised.splitlines(keepends=True),
+                fromfile="original",
+                tofile="optimised",
+            ))
+            if diff_lines:
+                components.html(
+                    monaco.editor("".join(diff_lines), language="diff", height=500),
+                    height=520,
+                )
+            else:
+                st.success("No changes — DAG is already optimal.")
+
+        with tab_side:
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.markdown("**Original**")
+                components.html(
+                    monaco.editor(original, language="python", height=500),
+                    height=520,
+                )
+            with col_b:
+                st.markdown("**Optimised**")
+                components.html(
+                    monaco.editor(optimised, language="python", height=500),
+                    height=520,
+                )
+
+        st.divider()
+
+    # ── Suggestions ───────────────────────────────────────────────────────────
     if not suggestions:
-        st.info("No optimisation suggestions found — DAG is already well-structured.")
+        st.info("No additional suggestions — all changes are reflected in the optimised file above.")
         return
 
     _CAT_LABELS = {

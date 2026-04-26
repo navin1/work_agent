@@ -94,10 +94,11 @@ Your response MUST be a single JSON object — NOT a list, NOT wrapped in any ot
 No markdown. No preamble. No trailing text. Start the response with {{ and end with }}.
 
 {{
+  "optimised_content": "<complete rewritten Python DAG file with ALL transformations from REWRITE RULES applied>",
   "suggestions": [
     {{
-      "description": "<what to change>",
-      "current_code": "<existing code snippet>",
+      "description": "<what was changed>",
+      "current_code": "<original code snippet>",
       "suggested_code": "<improved code snippet>",
       "reason": "<why this improves the DAG>",
       "category": "<dag_loading | modernisation | structural>",
@@ -117,6 +118,49 @@ No markdown. No preamble. No trailing text. Start the response with {{ and end w
     ]
   }}
 }}
+
+REWRITE RULES for optimised_content — apply ALL that are applicable:
+
+  1. UNUSED IMPORTS — remove every import not referenced in the final file.
+     Keep only what the rewritten code actually uses.
+
+  2. CONTEXT MANAGER — convert the bare-assignment DAG to the context-manager pattern.
+     Indent ALL task definitions inside the `with` block. Remove `dag=dag` from every
+     operator — it is inferred from the context manager.
+     BEFORE:  dag = DAG('my_dag', ...)
+              task = SomeOperator(..., dag=dag)
+     AFTER:   with DAG('my_dag', ...) as dag:
+                  task = SomeOperator(...)
+
+  3. catchup=False — add to the DAG constructor if not present.
+
+  4. EMPTY queryParameters — remove `"queryParameters": []` from every operator config.
+
+  5. LOOP COLLAPSE — when multiple operator groups share the same type and config shape
+     and differ only by an entity name, collapse them into a single for-loop.
+     EXACT RULES:
+     a. The entities list uses FULL task names (e.g. "eda_osr_rps_s_fee_item_snap"),
+        NOT short suffixes. Derive the full name from the existing task_id value.
+     b. Use direct local variables (bq_start, bq_main, bq_end) — NOT a dict or list.
+     c. Jinja {% include %} paths MUST use Python f-strings with escaped Jinja braces:
+          f"{{% include 'bq_sql/{entity}_start.sql' %}}"
+        → produces: {% include 'bq_sql/eda_osr_rps_s_fee_item_snap_start.sql' %}
+        NEVER use string concatenation like "{% include 'bq_sql/" + var + ".sql' %}".
+     d. Set the dependency chain INSIDE the loop on one line:
+          start_task >> bq_start >> bq_main >> bq_end >> end_task
+     e. NEVER change operator types — BashOperator stays BashOperator,
+        BigQueryInsertJobOperator stays BigQueryInsertJobOperator, etc.
+        Do NOT replace any operator with DummyOperator or EmptyOperator
+        unless the original code already uses DummyOperator/EmptyOperator.
+
+  6. CLEAN COMMENTS — remove section-delimiter comments that only restate the task name
+     (e.g. `##-----osr_rps_s_fee_item_snap_dag_start`). Keep substantive comments.
+
+  7. MODERNISATION — apply applicable rules from the section above without any
+     behaviour change.
+
+  8. HARD CONSTRAINTS — task IDs, SQL file include paths, params dict, label values,
+     bash_command strings, and the full dependency graph must be identical to the original.
 
 Rules for impacted_objects (read from the RENDERED SQL blocks if provided):
   • FROM clause / JOIN → operation "read"
@@ -235,6 +279,45 @@ def optimise_sql(sql: str, composer_env: str = None) -> str:
         return json.dumps({"error": str(exc)})
 
 
+def _build_dag_header(dag_id: str, doc_md: dict) -> str:
+    """Build a # comment block header for an optimised DAG file from doc_md data."""
+    from core import config as _cfg
+    overview  = doc_md.get("overview", "").strip()
+    job       = doc_md.get("control_m_job", "") or dag_id.upper().replace("-", "_")
+    folder    = _cfg.CONTROLM_FOLDER or "—"
+    server    = _cfg.CONTROLM_SERVER or "—"
+    objects   = doc_md.get("impacted_objects", [])
+
+    sep = "# " + "=" * 78
+    lines = [sep, f"# DAG: {dag_id}", sep]
+
+    if overview:
+        lines.append("#")
+        lines.append("# Overview:")
+        for sentence in overview.replace("\n", " ").split(". "):
+            sentence = sentence.strip().rstrip(".")
+            if sentence:
+                lines.append(f"#   {sentence}.")
+    lines.append("#")
+    lines.append(f"# Control-M Job : {job}")
+    lines.append(f"# Folder        : {folder}")
+    lines.append(f"# Server        : {server}")
+
+    if objects:
+        lines.append("#")
+        lines.append("# Impacted Objects:")
+        col_w = max((len(o.get("name", "")) for o in objects[:10]), default=10) + 2
+        for obj in objects[:10]:
+            name  = obj.get("name", "")
+            typ   = obj.get("type", "table").upper()
+            op    = obj.get("operation", "read").upper()
+            desc  = obj.get("description", "")
+            lines.append(f"#   {name:<{col_w}} [{typ:<5}]  {op:<10}  {desc}")
+
+    lines.append(sep)
+    return "\n".join(lines)
+
+
 @tool
 def optimise_dag(composer_env: str, dag_id: str) -> str:
     """Optimisation suggestions for a DAG in three categories: dag_loading, modernisation, structural.
@@ -316,9 +399,10 @@ def optimise_dag(composer_env: str, dag_id: str) -> str:
         raw = _call_llm(system, user_content)
         parsed = extract_json(raw)
 
-        # Handle both new {suggestions, doc_md} format and legacy list format
+        # Handle both new {suggestions, doc_md, optimised_content} format and legacy list format
         if isinstance(parsed, list):
             suggestions = parsed
+            optimised_content = ""
             doc_md = {
                 "overview": "",
                 "control_m_job": dag_id.upper().replace("-", "_"),
@@ -326,6 +410,7 @@ def optimise_dag(composer_env: str, dag_id: str) -> str:
             }
         else:
             suggestions = parsed.get("suggestions", [])
+            optimised_content = parsed.get("optimised_content", "")
             doc_md = parsed.get("doc_md", {})
             if not doc_md:
                 doc_md = {
@@ -334,9 +419,34 @@ def optimise_dag(composer_env: str, dag_id: str) -> str:
                     "impacted_objects": [],
                 }
 
+        # Prepend doc_md as a file-header comment block
+        if optimised_content:
+            header = _build_dag_header(dag_id, doc_md)
+            optimised_content = header + "\n\n" + optimised_content.lstrip()
+
+        # Save to exports dir for download
+        export_path = ""
+        if optimised_content:
+            from datetime import datetime
+            from pathlib import Path
+            from core import config as _cfg
+            exports = Path(_cfg.EXPORTS_ROOT)
+            exports.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out = exports / f"{dag_id}_optimised_{ts}.py"
+            out.write_text(optimised_content, encoding="utf-8")
+            export_path = str(out)
+
         log_audit("optimizer_tools", composer_env, f"optimise_dag:{dag_id}",
                   duration_ms=int((time.time() - start) * 1000))
-        return json.dumps({"dag_id": dag_id, "suggestions": suggestions, "doc_md": doc_md})
+        return json.dumps({
+            "dag_id": dag_id,
+            "original_content": source,
+            "optimised_content": optimised_content,
+            "export_path": export_path,
+            "suggestions": suggestions,
+            "doc_md": doc_md,
+        })
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
