@@ -281,7 +281,7 @@ import renderers.lineage_graph as _lg
 import renderers.schema_audit_panel as _sap
 
 
-def dispatch_renderers(agent_output: dict) -> None:
+def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
     steps = agent_output.get("intermediate_steps", [])
     if not steps:
         return
@@ -295,7 +295,7 @@ def dispatch_renderers(agent_output: dict) -> None:
             continue
 
     if "trace_from_excel" in tools_called:
-        _lg.render_lineage_graph(tools_called["trace_from_excel"])
+        _lg.render_lineage_graph(tools_called["trace_from_excel"], is_history=is_history)
 
     if "list_dags" in tools_called:
         _rt.render_dag_list(tools_called["list_dags"])
@@ -359,7 +359,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if "panels" in msg:
-            dispatch_renderers(msg["panels"])
+            dispatch_renderers(msg["panels"], is_history=True)
 
 
 # ── Chat input ────────────────────────────────────────────────────────────────

@@ -319,12 +319,25 @@ def _fetch_dag_source_airflow_api(dag_id: str, composer_env: str) -> str | None:
         file_token = dag_meta.get("file_token")
         if not file_token:
             return None
-        source_resp = _get(composer_env, f"/dagSources/{file_token}")
-        # Airflow returns {"content": "...source..."} for Accept: application/json
-        if isinstance(source_resp, dict) and "content" in source_resp:
-            return source_resp["content"]
-        if isinstance(source_resp, str) and len(source_resp) > 10:
-            return source_resp
+        # /dagSources returns text/plain by default; request JSON to get {"content": "..."}.
+        # Fall back to raw text if JSON parsing fails (older Airflow versions).
+        url = _base_url(composer_env) + f"/dagSources/{file_token}"
+        resp = _make_session(composer_env).get(
+            url,
+            headers={"Accept": "application/json"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        try:
+            data = resp.json()
+            if isinstance(data, dict) and "content" in data:
+                return data["content"]
+        except Exception:
+            pass
+        # plain-text fallback
+        text = resp.text
+        if text and len(text) > 10:
+            return text
     except Exception:
         pass
     return None

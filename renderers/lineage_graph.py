@@ -328,16 +328,18 @@ def _render_content_panel(info: dict) -> None:
             st.info("No recent job runs found for this DAG.")
 
         src_key = f"lg_dag_src__{dag_id}"
-        if src_key not in st.session_state:
-            with st.spinner("Loading DAG source…"):
-                try:
-                    from tools.composer_tools import _fetch_dag_source
-                    src = _fetch_dag_source(dag_id, composer_env or None)
-                    st.session_state[src_key] = src or ""
-                except Exception as exc:
-                    st.session_state[src_key] = f"# Error fetching source: {exc}"
-        source = st.session_state.get(src_key, "")
-        if source and not source.startswith("# Error"):
+        source = st.session_state.get(src_key)
+        if source is None:
+            if st.button("🐍 Load DAG Source", key=f"load_src_{dag_id}"):
+                with st.spinner("Fetching DAG source…"):
+                    try:
+                        from tools.composer_tools import _fetch_dag_source
+                        src = _fetch_dag_source(dag_id, composer_env or None)
+                        st.session_state[src_key] = src or ""
+                    except Exception as exc:
+                        st.session_state[src_key] = f"# Error: {exc}"
+                st.rerun()
+        elif source and not source.startswith("# Error"):
             with st.expander("🐍 DAG Source", expanded=True):
                 h = min(max(300, source.count("\n") * 18 + 40), 800)
                 components.html(monaco.editor(source, language="python", height=h), height=h + 20)
@@ -348,7 +350,7 @@ def _render_content_panel(info: dict) -> None:
                     mime="text/plain",
                     key=f"dl_lg_dagsrc_{dag_id}",
                 )
-        elif source.startswith("# Error"):
+        elif source and source.startswith("# Error"):
             st.warning(source)
         else:
             st.info("DAG source not found (checked Airflow API, GCS, and Git).")
@@ -403,10 +405,51 @@ def _render_content_panel(info: dict) -> None:
             st.info("No rendered SQL available.")
 
 
+# ── Static summary (history replay) ──────────────────────────────────────────
+
+def _render_lineage_summary(data: dict) -> None:
+    """Compact read-only summary shown when lineage is in chat history."""
+    import pandas as pd
+    excel_file  = data.get("excel_file", "unknown.xlsx")
+    bq_table    = data.get("bq_table", "")
+    dag_names   = data.get("dag_names", [])
+    dag_details = data.get("dag_details", [])
+    dag_detail_map = {d["dag_id"]: d for d in dag_details}
+
+    header = f"📊 **{excel_file}**"
+    if bq_table:
+        header += f" → `{bq_table}`"
+    if dag_names:
+        header += f" → {', '.join(f'`{d}`' for d in dag_names)}"
+    st.markdown(header)
+
+    for dag_id in dag_names:
+        dag_info   = dag_detail_map.get(dag_id, {})
+        tasks      = dag_info.get("tasks", [])
+        recent     = dag_info.get("recent_jobs", [])
+        last_state = recent[0].get("state", "—") if recent else "—"
+        with st.expander(f"⚙ {dag_id}  ·  last: {last_state}  ·  {len(tasks)} task(s)", expanded=False):
+            if tasks:
+                rows = [
+                    {
+                        "Task":      t.get("task_id", ""),
+                        "Operator":  (t.get("operator") or "").replace("Operator", ""),
+                        "State":     t.get("state") or "—",
+                        "Depends On": ", ".join(t.get("depends_on") or []) or "—",
+                    }
+                    for t in tasks
+                ]
+                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+
 # ── Public entry point ────────────────────────────────────────────────────────
 
-def render_lineage_graph(raw_json: str) -> None:
-    """Render interactive lineage graph from trace_from_excel tool output."""
+def render_lineage_graph(raw_json: str, is_history: bool = False) -> None:
+    """Render interactive lineage graph from trace_from_excel tool output.
+
+    Pass is_history=True when rendering inside the chat history loop to avoid
+    the streamlit-flow component triggering infinite reruns that block user input.
+    """
     try:
         data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
     except Exception:
@@ -419,6 +462,10 @@ def render_lineage_graph(raw_json: str) -> None:
         return
     if "error" in data:
         st.error(f"Lineage error: {data['error']}")
+        return
+
+    if is_history:
+        _render_lineage_summary(data)
         return
 
     try:
