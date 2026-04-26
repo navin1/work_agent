@@ -50,13 +50,16 @@ _excel_state()
 
 # ── Session state ─────────────────────────────────────────────────────────────
 
+from agent.system_prompt import _PROMPT_VERSION as _AGENT_PROMPT_VER
+
 if "show_runbook" not in st.session_state:
     st.session_state.show_runbook = False
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "agent" not in st.session_state:
+if "agent" not in st.session_state or st.session_state.get("_agent_prompt_ver") != _AGENT_PROMPT_VER:
     from agent.agent import build_agent
     st.session_state.agent = build_agent()
+    st.session_state._agent_prompt_ver = _AGENT_PROMPT_VER
 if "sql_bundle" not in st.session_state:
     st.session_state.sql_bundle = []
 

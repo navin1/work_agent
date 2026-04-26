@@ -2,6 +2,8 @@
 from core import config, persistence
 from core.workspace import get_pinned_workspace
 
+_PROMPT_VERSION = "v5"
+
 
 def _list_loaded_tables_internal() -> list[dict]:
     from core.duckdb_manager import get_manager

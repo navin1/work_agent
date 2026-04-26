@@ -319,10 +319,20 @@ def optimise_dag(composer_env: str, dag_id: str) -> str:
         # Handle both new {suggestions, doc_md} format and legacy list format
         if isinstance(parsed, list):
             suggestions = parsed
-            doc_md = {}
+            doc_md = {
+                "overview": "",
+                "control_m_job": dag_id.upper().replace("-", "_"),
+                "impacted_objects": [],
+            }
         else:
             suggestions = parsed.get("suggestions", [])
             doc_md = parsed.get("doc_md", {})
+            if not doc_md:
+                doc_md = {
+                    "overview": "",
+                    "control_m_job": dag_id.upper().replace("-", "_"),
+                    "impacted_objects": [],
+                }
 
         log_audit("optimizer_tools", composer_env, f"optimise_dag:{dag_id}",
                   duration_ms=int((time.time() - start) * 1000))
