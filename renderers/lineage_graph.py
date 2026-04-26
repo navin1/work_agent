@@ -328,29 +328,27 @@ def _render_content_panel(info: dict) -> None:
             st.info("No recent job runs found for this DAG.")
 
         src_key = f"lg_dag_src__{dag_id}"
-        source = st.session_state.get(src_key)
-        if source is None:
-            if st.button("🐍 Load DAG Source", key=f"load_src_{dag_id}"):
-                with st.spinner("Fetching DAG source…"):
-                    try:
-                        from tools.composer_tools import _fetch_dag_source
-                        src = _fetch_dag_source(dag_id, composer_env or None)
-                        st.session_state[src_key] = src or ""
-                    except Exception as exc:
-                        st.session_state[src_key] = f"# Error: {exc}"
-                st.rerun()
-        elif source and not source.startswith("# Error"):
-            with st.expander("🐍 DAG Source", expanded=True):
-                h = min(max(300, source.count("\n") * 18 + 40), 800)
-                components.html(monaco.editor(source, language="python", height=h), height=h + 20)
-                st.download_button(
-                    "⬇ Download DAG source",
-                    data=source.encode("utf-8"),
-                    file_name=f"{dag_id}.py",
-                    mime="text/plain",
-                    key=f"dl_lg_dagsrc_{dag_id}",
-                )
-        elif source and source.startswith("# Error"):
+        if src_key not in st.session_state:
+            with st.spinner("Fetching DAG source…"):
+                try:
+                    from tools.composer_tools import _fetch_dag_source
+                    src = _fetch_dag_source(dag_id, composer_env or None)
+                    st.session_state[src_key] = src or ""
+                except Exception as exc:
+                    st.session_state[src_key] = f"# Error: {exc}"
+        source = st.session_state[src_key]
+        if source and not source.startswith("# Error"):
+            st.markdown("**DAG Source:**")
+            h = min(max(300, source.count("\n") * 18 + 40), 800)
+            components.html(monaco.editor(source, language="python", height=h), height=h + 20)
+            st.download_button(
+                "⬇ Download DAG source",
+                data=source.encode("utf-8"),
+                file_name=f"{dag_id}.py",
+                mime="text/plain",
+                key=f"dl_lg_dagsrc_{dag_id}",
+            )
+        elif source.startswith("# Error"):
             st.warning(source)
         else:
             st.info("DAG source not found (checked Airflow API, GCS, and Git).")
