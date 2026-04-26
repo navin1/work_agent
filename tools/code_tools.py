@@ -293,10 +293,18 @@ def _optimise_single(
     raw = response.content
     parsed = extract_json(raw)
 
+    import re as _re
     optimised = parsed.get("optimised_content", content)
     if ext == ".sql":
         content_display = format_sql(content)
-        optimised = format_sql(optimised)
+        # sqlglot strips /* */ block comments — preserve the header then reattach
+        _hdr_match = _re.match(r"^(\s*/\*.*?\*/\s*)", optimised, _re.DOTALL)
+        if _hdr_match:
+            _header = _hdr_match.group(1).rstrip()
+            _body   = optimised[_hdr_match.end():]
+            optimised = _header + "\n\n" + format_sql(_body)
+        else:
+            optimised = format_sql(optimised)
     else:
         content_display = content
 

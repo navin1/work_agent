@@ -284,10 +284,9 @@ def render_dag_suggestions(raw_json: str) -> None:
 
     st.subheader(f"DAG Optimisation: {dag_id}")
 
-    # Doc MD panel first
-    if doc_md:
-        _render_doc_md_panel(doc_md, dag_id)
-        st.divider()
+    # Doc MD panel — always render (overview and control_m_job derived from dag_id if absent)
+    _render_doc_md_panel(doc_md, dag_id)
+    st.divider()
 
     # Suggestions
     if not suggestions:

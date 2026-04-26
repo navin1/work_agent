@@ -90,39 +90,42 @@ RULE 5 — no top-level side-effects:
   - Suggest `pool` assignment for resource-heavy tasks.
   - Consolidate redundant branching operators.
 
-Return JSON only — a single object with exactly this structure (no markdown, no preamble):
-{
+Your response MUST be a single JSON object — NOT a list, NOT wrapped in any other structure.
+No markdown. No preamble. No trailing text. Start the response with {{ and end with }}.
+
+{{
   "suggestions": [
-    {
-      "description": "...",
-      "current_code": "...",
-      "suggested_code": "...",
-      "reason": "...",
-      "category": "dag_loading" | "modernisation" | "structural",
-      "confidence": "High" | "Medium" | "Low"
-    }
+    {{
+      "description": "<what to change>",
+      "current_code": "<existing code snippet>",
+      "suggested_code": "<improved code snippet>",
+      "reason": "<why this improves the DAG>",
+      "category": "<dag_loading | modernisation | structural>",
+      "confidence": "<High | Medium | Low>"
+    }}
   ],
-  "doc_md": {
-    "overview": "Crisp 3-4 sentence paragraph (max 4 lines) describing what this DAG does, what data it processes or loads, what systems it touches, and its business purpose. Infer from task names, operators, SQL file names, and SQL content if provided.",
-    "control_m_job": "The Control-M job name — convert the DAG id to UPPER_SNAKE_CASE. E.g. dag_rps800_load → DAG_RPS800_LOAD.",
+  "doc_md": {{
+    "overview": "<3-4 crisp sentences: what this DAG does, what data it processes, what it loads/computes, and its business purpose. Infer from task names, operator types, and any SQL provided.>",
+    "control_m_job": "<DAG id converted to UPPER_SNAKE_CASE, e.g. dag_rps800_load → DAG_RPS800_LOAD>",
     "impacted_objects": [
-      {
-        "name": "schema.object_name",
-        "description": "one short line describing what this table or view contains",
-        "operation": "read" | "write" | "read/write",
-        "type": "table" | "view"
-      }
+      {{
+        "name": "<schema.table_or_view as it literally appears in the SQL>",
+        "description": "<one-line description of what this object holds>",
+        "operation": "<read | write | read/write>",
+        "type": "<table | view>"
+      }}
     ]
-  }
-}
-IMPORTANT — impacted_objects MUST be extracted from the RENDERED SQL FROM TASKS section above.
-Read every SQL block provided and identify:
-  • Tables/views in FROM clauses, JOIN clauses → operation: "read"
-  • Tables in INSERT INTO / CREATE OR REPLACE TABLE / MERGE INTO / destination_dataset_table → operation: "write"
-  • Tables that appear in both read and write positions → operation: "read/write"
-Include up to 10 objects. Schema-qualify every name as it appears in the SQL (project.dataset.table or dataset.table).
-Distinguish tables from views: if a name ends in _view, _vw, _v, or appears only in SELECT sources without DML, mark as "view"; otherwise "table".
-Do NOT invent names — only use names that literally appear in the SQL provided."""
+  }}
+}}
+
+Rules for impacted_objects (read from the RENDERED SQL blocks if provided):
+  • FROM clause / JOIN → operation "read"
+  • INSERT INTO / CREATE OR REPLACE TABLE / MERGE INTO target → operation "write"
+  • Appears in both → operation "read/write"
+  • Up to 10 objects, schema-qualified exactly as written in the SQL.
+  • Names ending in _view / _vw / _v, or used only as SELECT sources → type "view"; otherwise "table".
+  • If no rendered SQL is provided, infer table names from operator params and file path hints in the DAG.
+  • doc_md is MANDATORY — always populate overview and control_m_job even if SQL is unavailable."""
 
 
 def _call_llm(system: str, user_content: str) -> str:
