@@ -323,6 +323,9 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
     if "optimise_sql" in tools_called:
         _dv.render(tools_called["optimise_sql"])
 
+    if "optimise_sql_file" in tools_called:
+        _dv.render(tools_called["optimise_sql_file"])
+
     if "validate_optimisation" in tools_called:
         _vp.render(tools_called["validate_optimisation"])
 
@@ -341,13 +344,20 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
     if "run_reconciliation" in tools_called:
         _rp.render(tools_called["run_reconciliation"])
 
+    if "optimise_dag" in tools_called:
+        _ofv.render_dag_suggestions(tools_called["optimise_dag"])
+
     if "optimise_file" in tools_called:
         _ofv.render_optimised_file(tools_called["optimise_file"])
 
     if "optimise_folder" in tools_called:
         _ofv.render_optimised_folder(tools_called["optimise_folder"])
 
-    if "read_file" in tools_called:
+    _has_optimization = any(
+        k in tools_called
+        for k in ("optimise_sql", "optimise_sql_file", "optimise_file", "optimise_folder")
+    )
+    if "read_file" in tools_called and not _has_optimization:
         _ofv.render_file_content(tools_called["read_file"])
 
     if "compare_git_gcs" in tools_called:

@@ -153,6 +153,57 @@ def render_optimised_file(raw_json: str) -> None:
             )
 
 
+def render_dag_suggestions(raw_json: str) -> None:
+    """Render optimise_dag result: list of DAG structural improvement suggestions."""
+    try:
+        data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+    except Exception:
+        st.error("Could not parse DAG optimisation result.")
+        return
+
+    if "error" in data:
+        st.error(f"DAG optimisation error: {data['error']}")
+        return
+
+    dag_id = data.get("dag_id", "")
+    suggestions = data.get("suggestions", [])
+    if isinstance(suggestions, dict):
+        suggestions = suggestions.get("suggestions", [])
+
+    st.subheader(f"DAG Optimisation: {dag_id}")
+
+    if not suggestions:
+        st.info("No optimisation suggestions found — DAG is already well-structured.")
+        return
+
+    by_category: dict = {}
+    for s in suggestions:
+        cat = s.get("category", "general")
+        by_category.setdefault(cat, []).append(s)
+
+    _CAT_LABELS = {
+        "dag_loading":    "🔧 DAG Loading",
+        "modernisation":  "⚡ Modernisation",
+        "structural":     "🏗️ Structural",
+    }
+
+    for cat, items in by_category.items():
+        label = _CAT_LABELS.get(cat, cat.title())
+        st.markdown(f"**{label}** ({len(items)} suggestion{'s' if len(items) != 1 else ''})")
+        for s in items:
+            conf = s.get("confidence", "")
+            badge = _IMPACT_BADGES.get(conf, "")
+            with st.expander(f"{badge} {s.get('description', 'Suggestion')} — {conf} confidence"):
+                st.markdown(f"**Reason:** {s.get('reason', '')}")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.markdown("**Current**")
+                    st.code(s.get("current_code", ""), language="python")
+                with col_b:
+                    st.markdown("**Suggested**")
+                    st.code(s.get("suggested_code", ""), language="python")
+
+
 def render_optimised_folder(raw_json: str) -> None:
     """Render optimise_folder result: summary metrics, zip download, per-file expandable panels."""
     global _render_count
