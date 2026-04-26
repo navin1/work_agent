@@ -299,6 +299,17 @@ AIRFLOW DAG REWRITE RULES (apply when the file defines an Airflow DAG):
 6. SECTION DELIMITER COMMENTS — remove comments that only restate the task name
    (e.g. ##-----osr_rps_s_fee_item_snap_dag_start). Keep substantive comments.
 
+7. DAG DOC_MD VARIABLE — add a dag_doc_md Markdown string and wire it:
+   a. Declare it BEFORE the DAG constructor (server will replace the content):
+        dag_doc_md = '''
+        # {CONTROL_M_JOB_NAME}
+        ...
+        '''
+   b. Pass it to the DAG constructor: `doc_md=dag_doc_md,`
+   c. Set it on the dag object as the FIRST line inside `with DAG(...) as dag:`:
+        dag.doc_md = dag_doc_md
+   The variable name MUST be exactly `dag_doc_md`.
+
 doc_md field — MANDATORY when the file is an Airflow DAG (contains `from airflow` or `import airflow`).
 For non-DAG Python files set doc_md to null.
 
@@ -360,14 +371,13 @@ def _optimise_single(
         is_airflow_dag = "from airflow" in content or "import airflow" in content
         doc_md = parsed.get("doc_md") or {}
         if is_airflow_dag:
-            # Guarantee minimal doc_md so the header is always generated
+            # Guarantee minimal doc_md fields
             if not doc_md.get("control_m_job"):
                 doc_md["control_m_job"] = Path(file_name).stem.upper().replace("-", "_")
             if not isinstance(doc_md.get("impacted_objects"), list):
                 doc_md["impacted_objects"] = []
-            from tools.optimizer_tools import _build_dag_header
-            header = _build_dag_header(Path(file_name).stem, doc_md)
-            optimised = header + "\n\n" + optimised.lstrip()
+            from tools.optimizer_tools import _inject_dag_docmd
+            optimised = _inject_dag_docmd(optimised, Path(file_name).stem, doc_md)
 
     return {
         "file_name": file_name,

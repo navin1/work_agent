@@ -165,6 +165,19 @@ REWRITE RULES for optimised_content — apply ALL that are applicable:
   8. HARD CONSTRAINTS — task IDs, SQL file include paths, params dict, label values,
      bash_command strings, and the full dependency graph must be identical to the original.
 
+  9. DAG DOC_MD VARIABLE — add a dag_doc_md Markdown string and wire it into Airflow:
+     a. Declare the variable BEFORE the DAG constructor (the server will replace its
+        content, so use a placeholder if needed):
+          dag_doc_md = '''
+          # {CONTROL_M_JOB_NAME}
+          ...
+          '''
+     b. Pass it in the DAG constructor kwargs:
+          doc_md = dag_doc_md,
+     c. Set it on the dag object as the FIRST statement inside `with DAG(...) as dag:`:
+          dag.doc_md = dag_doc_md
+     The variable name MUST be exactly `dag_doc_md` — do not rename it.
+
 Rules for impacted_objects (read from the RENDERED SQL blocks if provided):
   • FROM clause / JOIN → operation "read"
   • INSERT INTO / CREATE OR REPLACE TABLE / MERGE INTO target → operation "write"
@@ -282,43 +295,87 @@ def optimise_sql(sql: str, composer_env: str = None) -> str:
         return json.dumps({"error": str(exc)})
 
 
-def _build_dag_header(dag_id: str, doc_md: dict) -> str:
-    """Build a # comment block header for an optimised DAG file from doc_md data."""
+def _build_dag_docmd_variable(dag_id: str, doc_md: dict) -> str:
+    """Build the  dag_doc_md = \"\"\"...\"\"\"  Markdown assignment for an Airflow DAG file."""
     from core import config as _cfg
-    overview  = doc_md.get("overview", "").strip()
-    job       = doc_md.get("control_m_job", "") or dag_id.upper().replace("-", "_")
-    folder    = _cfg.CONTROLM_FOLDER or "—"
-    server    = _cfg.CONTROLM_SERVER or "—"
-    objects   = doc_md.get("impacted_objects", [])
+    overview   = doc_md.get("overview", "").strip()
+    job        = doc_md.get("control_m_job", "") or dag_id.upper().replace("-", "_")
+    folder     = _cfg.CONTROLM_FOLDER or "—"
+    server     = _cfg.CONTROLM_SERVER or "—"
+    objects    = doc_md.get("impacted_objects", [])
+    conf_base  = (_cfg.CONFLUENCE_BASE_URL or "").rstrip("/")
 
-    sep = "# " + "=" * 78
-    lines = [sep, f"# DAG: {dag_id}", sep]
+    md = [f"# {job}", ""]
 
     if overview:
-        lines.append("#")
-        lines.append("# Overview:")
-        for sentence in overview.replace("\n", " ").split(". "):
-            sentence = sentence.strip().rstrip(".")
-            if sentence:
-                lines.append(f"#   {sentence}.")
-    lines.append("#")
-    lines.append(f"# Control-M Job : {job}")
-    lines.append(f"# Folder        : {folder}")
-    lines.append(f"# Server        : {server}")
+        md += ["---", "", "## Overview", "", overview, "", "---", ""]
 
+    # Control-M table
+    job_cell = f"[{job}]({conf_base}/{job})" if conf_base else f"`{job}`"
+    md += [
+        "## Control-M job",
+        "",
+        "| Field      | Value |",
+        "|------------|-------|",
+        f"| Job name   | {job_cell} |",
+        f"| Folder     | `{folder}` |",
+        f"| Server     | `{server}` |",
+        "",
+        "---",
+        "",
+    ]
+
+    # Impacted tables & views table
     if objects:
-        lines.append("#")
-        lines.append("# Impacted Objects:")
-        col_w = max((len(o.get("name", "")) for o in objects[:10]), default=10) + 2
+        md += [
+            "## Impacted tables & views",
+            "",
+            "| Object | Type | Operation | Description |",
+            "|--------|------|-----------|-------------|",
+        ]
         for obj in objects[:10]:
-            name  = obj.get("name", "")
-            typ   = obj.get("type", "table").upper()
-            op    = obj.get("operation", "read").upper()
-            desc  = obj.get("description", "")
-            lines.append(f"#   {name:<{col_w}} [{typ:<5}]  {op:<10}  {desc}")
+            name = obj.get("name", "")
+            typ  = obj.get("type", "table").title()
+            op   = obj.get("operation", "read").title()
+            desc = obj.get("description", "")
+            md.append(f"| `{name}` | {typ} | {op} | {desc} |")
+        md += ["", "---", ""]
 
-    lines.append(sep)
-    return "\n".join(lines)
+    md_body = "\n".join(md)
+    return f'dag_doc_md = """\n{md_body}\n"""'
+
+
+def _inject_dag_docmd(source: str, dag_id: str, doc_md: dict) -> str:
+    """Inject (or replace) the dag_doc_md variable in a DAG source file.
+
+    - If dag_doc_md already exists  → replace its content with the canonical version.
+    - Otherwise                     → insert it before `with DAG(` / `dag = DAG(`.
+    The LLM is responsible for wiring doc_md=dag_doc_md into the constructor and
+    setting dag.doc_md = dag_doc_md; this function only manages the variable itself.
+    """
+    import re as _re
+    block = _build_dag_docmd_variable(dag_id, doc_md)
+
+    # Replace an existing dag_doc_md = """...""" block (LLM may have generated its own)
+    existing = _re.search(r'dag_doc_md\s*=\s*""".*?"""', source, _re.DOTALL)
+    if existing:
+        return source[: existing.start()] + block + source[existing.end():]
+
+    # Inject before the DAG constructor
+    section = (
+        "# " + "─" * 77 + "\n"
+        "# DOC_MD  ——  rendered in Airflow UI → Details tab & Graph view header\n"
+        "# " + "─" * 77 + "\n\n"
+    )
+    dag_pat = _re.search(
+        r"^(?:with\s+DAG\s*\(|dag\s*=\s*DAG\s*\()", source, _re.MULTILINE
+    )
+    if dag_pat:
+        pos = dag_pat.start()
+        return source[:pos] + section + block + "\n\n\n" + source[pos:]
+
+    # Fallback: prepend at top
+    return section + block + "\n\n\n" + source
 
 
 @tool
@@ -422,10 +479,9 @@ def optimise_dag(composer_env: str, dag_id: str) -> str:
                     "impacted_objects": [],
                 }
 
-        # Prepend doc_md as a file-header comment block
+        # Inject dag_doc_md variable (and replace if LLM already generated one)
         if optimised_content:
-            header = _build_dag_header(dag_id, doc_md)
-            optimised_content = header + "\n\n" + optimised_content.lstrip()
+            optimised_content = _inject_dag_docmd(optimised_content, dag_id, doc_md)
 
         # Save to exports dir for download
         export_path = ""
