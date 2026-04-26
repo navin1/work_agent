@@ -299,7 +299,14 @@ Return JSON only — no markdown, no preamble:
   "optimised_content": "<full optimised Python source>",
   "changes": [{"change_type":"...","original_snippet":"...","optimised_snippet":"...","reason":"...","estimated_impact":"High|Medium|Low","confidence":"High|Medium|Low"}],
   "overall_confidence_score": <0-100>,
-  "overall_summary": "..."
+  "overall_summary": "...",
+  "doc_md": {
+    "overview": "<3-4 crisp sentences: what this DAG does, what data it processes, what it loads, and its business purpose. Omit if the file is not an Airflow DAG.>",
+    "control_m_job": "<DAG id in UPPER_SNAKE_CASE — omit if not a DAG>",
+    "impacted_objects": [
+      {"name": "<schema.table>", "description": "<one line>", "operation": "<read|write|read/write>", "type": "<table|view>"}
+    ]
+  }
 }"""
 
 
@@ -342,6 +349,13 @@ def _optimise_single(
             optimised = format_sql(optimised)
     else:
         content_display = content
+        # For Python files: prepend doc_md as a # comment block header if the LLM returned one
+        doc_md = parsed.get("doc_md", {})
+        if doc_md and doc_md.get("overview"):
+            from tools.optimizer_tools import _build_dag_header
+            dag_id = Path(file_name).stem
+            header = _build_dag_header(dag_id, doc_md)
+            optimised = header + "\n\n" + optimised.lstrip()
 
     return {
         "file_name": file_name,
