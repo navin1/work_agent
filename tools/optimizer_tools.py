@@ -31,6 +31,9 @@ Return JSON only. No markdown, no preamble."""
 _DAG_OPTIMISE_SYSTEM_PROMPT = """You are an Apache Airflow DAG optimisation expert and technical documentation writer.
 Airflow version: {airflow_version}, Python: {python_version}.
 ABSOLUTE CONSTRAINT: Do NOT suggest changes that alter functional behaviour, data outputs, business logic, or scheduling semantics.
+IMPORTS: Never rewrite or reorganise import statements. Only REMOVE complete import lines that are
+genuinely unused after rewriting. A used import (e.g. `from datetime import timedelta`) must stay
+exactly as-is — do NOT move names to a different module or change the import form in any way.
 
 ═══ DAG LOADING RULES — violations prevent Airflow from discovering the DAG ═══
 

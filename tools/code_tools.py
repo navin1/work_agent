@@ -259,12 +259,17 @@ ABSOLUTE CONSTRAINTS (never violate):
 - Do NOT alter exception handling in ways that change which errors propagate.
 - NEVER change an operator type (e.g. BashOperator must stay BashOperator).
   Replacing a functional operator with DummyOperator/EmptyOperator removes behaviour — forbidden.
+- IMPORTS — never rewrite, rename, or reorganise import statements.
+  Only REMOVE complete import lines that are genuinely unused after rewriting.
+  Keep every import that is used exactly as-is. E.g. `from datetime import timedelta`
+  must stay `from datetime import timedelta` — do NOT move timedelta to a different module.
 - Optimise ONLY for: memory efficiency, idiomatic Python, import hygiene, redundant variables.
 
 AIRFLOW DAG REWRITE RULES (apply when the file defines an Airflow DAG):
 
-1. UNUSED IMPORTS — remove every import not referenced in the final rewritten code.
-   Keep only what the code actually uses.
+1. UNUSED IMPORTS — remove complete import lines that are not referenced after rewriting.
+   Never change the form of an import. Only delete the whole line if nothing in the
+   rewritten code references that name.
 
 2. CONTEXT MANAGER — convert the bare assignment pattern to the context-manager pattern
    and remove dag=dag from every operator:
@@ -294,6 +299,9 @@ AIRFLOW DAG REWRITE RULES (apply when the file defines an Airflow DAG):
 6. SECTION DELIMITER COMMENTS — remove comments that only restate the task name
    (e.g. ##-----osr_rps_s_fee_item_snap_dag_start). Keep substantive comments.
 
+doc_md field — MANDATORY when the file is an Airflow DAG (contains `from airflow` or `import airflow`).
+For non-DAG Python files set doc_md to null.
+
 Return JSON only — no markdown, no preamble:
 {
   "optimised_content": "<full optimised Python source>",
@@ -301,10 +309,10 @@ Return JSON only — no markdown, no preamble:
   "overall_confidence_score": <0-100>,
   "overall_summary": "...",
   "doc_md": {
-    "overview": "<3-4 crisp sentences: what this DAG does, what data it processes, what it loads, and its business purpose. Omit if the file is not an Airflow DAG.>",
-    "control_m_job": "<DAG id in UPPER_SNAKE_CASE — omit if not a DAG>",
+    "overview": "<3-4 crisp sentences describing what this pipeline does, what data it processes, what it loads, and its business purpose — written for on-call engineers who need fast context>",
+    "control_m_job": "<DAG id converted to UPPER_SNAKE_CASE, e.g. eda_osr_rps_285 → EDA_OSR_RPS_285>",
     "impacted_objects": [
-      {"name": "<schema.table>", "description": "<one line>", "operation": "<read|write|read/write>", "type": "<table|view>"}
+      {"name": "<schema.table exactly as in SQL>", "description": "<one line>", "operation": "<read|write|read/write>", "type": "<table|view>"}
     ]
   }
 }"""
@@ -349,12 +357,16 @@ def _optimise_single(
             optimised = format_sql(optimised)
     else:
         content_display = content
-        # For Python files: prepend doc_md as a # comment block header if the LLM returned one
-        doc_md = parsed.get("doc_md", {})
-        if doc_md and doc_md.get("overview"):
+        is_airflow_dag = "from airflow" in content or "import airflow" in content
+        doc_md = parsed.get("doc_md") or {}
+        if is_airflow_dag:
+            # Guarantee minimal doc_md so the header is always generated
+            if not doc_md.get("control_m_job"):
+                doc_md["control_m_job"] = Path(file_name).stem.upper().replace("-", "_")
+            if not isinstance(doc_md.get("impacted_objects"), list):
+                doc_md["impacted_objects"] = []
             from tools.optimizer_tools import _build_dag_header
-            dag_id = Path(file_name).stem
-            header = _build_dag_header(dag_id, doc_md)
+            header = _build_dag_header(Path(file_name).stem, doc_md)
             optimised = header + "\n\n" + optimised.lstrip()
 
     return {
@@ -365,6 +377,7 @@ def _optimise_single(
         "changes": parsed.get("changes", []),
         "overall_confidence_score": parsed.get("overall_confidence_score"),
         "overall_summary": parsed.get("overall_summary", ""),
+        "doc_md": doc_md if (ext == ".py") else {},
     }
 
 

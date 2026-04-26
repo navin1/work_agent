@@ -74,10 +74,17 @@ def render_optimised_file(raw_json: str) -> None:
     score = data.get("overall_confidence_score")
     summary = data.get("overall_summary", "")
     export_path = data.get("export_path")
+    doc_md = data.get("doc_md") or {}
 
     lang = "sql" if file_type == "sql" else "python"
 
     st.subheader(f"Optimised: {file_name}")
+
+    # Doc MD panel for Python DAG files
+    if file_type == "python" and doc_md:
+        dag_id = Path(file_name).stem
+        _render_doc_md_panel(doc_md, dag_id)
+        st.divider()
 
     # Metrics row
     c1, c2, c3 = st.columns(3)
