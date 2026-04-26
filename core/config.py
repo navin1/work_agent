@@ -70,6 +70,11 @@ AUDIT_LOG_PATH: str = os.getenv("AUDIT_LOG_PATH", str(Path(__file__).parent.pare
 LARGE_FILE_ROW_THRESHOLD: int = int(os.getenv("LARGE_FILE_ROW_THRESHOLD", "50000"))
 RECONCILIATION_CACHE_TTL_MINUTES: int = int(os.getenv("RECONCILIATION_CACHE_TTL_MINUTES", "30"))
 
+# Control-M / Confluence integration
+CONFLUENCE_BASE_URL: str = os.getenv("CONFLUENCE_BASE_URL", "")
+CONTROLM_FOLDER: str     = os.getenv("CONTROLM_FOLDER", "")
+CONTROLM_SERVER: str     = os.getenv("CONTROLM_SERVER", "")
+
 # Fallback SDK versions used when no composer_env is provided to optimisation tools.
 DEFAULT_AIRFLOW_VERSION: str = os.getenv("DEFAULT_AIRFLOW_VERSION", "2.6.3")
 DEFAULT_BQ_SDK: str          = os.getenv("DEFAULT_BQ_SDK", "google-cloud-bigquery==3.11.0")

@@ -221,15 +221,39 @@ def _scan_folder(folder_path: str) -> list[dict]:
 
 # ── Optimisation prompts ──────────────────────────────────────────────────────
 
-_SQL_OPT_PROMPT = """You are a BigQuery SQL performance expert.
+_SQL_OPT_PROMPT = """You are a BigQuery SQL performance expert and technical documentation writer.
 ABSOLUTE CONSTRAINTS (never violate):
 - Do NOT change functional output, result set, business logic, column names, data types, or row semantics.
 - Do NOT add, remove, or rename columns. Do NOT change WHERE, HAVING, or JOIN conditions in a way that alters which rows are returned.
 - Do NOT change GROUP BY keys, ORDER BY expressions, or aggregation functions.
 - Optimise ONLY for: partition filtering, clustering keys, JOIN order, CTE extraction, subquery elimination, scan reduction, slot efficiency.
+
+The optimised_content field MUST begin with a structured block comment header in EXACTLY this format
+(replace the placeholder text with accurate content derived from analysing the SQL — be crisp):
+
+/*
+ * ============================================================================
+ * OVERVIEW
+ * ============================================================================
+ * <3-4 plain-English sentences: what this SQL does, what it filters/transforms,
+ *  and what it produces. Max 4 lines. No bullet points.>
+ *
+ * ----------------------------------------------------------------------------
+ * INPUTS
+ * ----------------------------------------------------------------------------
+ * <schema.source_table_or_view>  -- <one-line description of what this source holds>
+ * <...one entry per source read by this SQL>
+ *
+ * ----------------------------------------------------------------------------
+ * OUTPUTS
+ * ----------------------------------------------------------------------------
+ * <schema.target_table>  -- <load strategy: truncate-and-load | merge | append | insert>
+ * ============================================================================
+ */
+
 Return JSON only — no markdown, no preamble:
 {
-  "optimised_content": "<full optimised SQL>",
+  "optimised_content": "<header comment followed by the full optimised SQL>",
   "changes": [{"change_type":"...","original_snippet":"...","optimised_snippet":"...","reason":"...","estimated_impact":"High|Medium|Low","confidence":"High|Medium|Low"}],
   "overall_confidence_score": <0-100>,
   "overall_summary": "..."

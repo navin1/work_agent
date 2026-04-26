@@ -153,8 +153,119 @@ def render_optimised_file(raw_json: str) -> None:
             )
 
 
+def _render_doc_md_panel(doc_md: dict, dag_id: str) -> None:
+    """Render the doc_md panel: overview, Control-M job link, impacted tables/views card grid."""
+    from core import config as _cfg
+
+    st.markdown("#### 📋 DAG Documentation")
+
+    # ── Overview ──────────────────────────────────────────────────────────────
+    overview = doc_md.get("overview", "").strip()
+    if overview:
+        st.markdown("**Overview**")
+        st.info(overview)
+
+    # ── Control-M job ─────────────────────────────────────────────────────────
+    job_name = doc_md.get("control_m_job", "").strip()
+    if not job_name:
+        job_name = dag_id.upper().replace("-", "_")
+
+    confluence_url = _cfg.CONFLUENCE_BASE_URL.rstrip("/") if _cfg.CONFLUENCE_BASE_URL else ""
+    folder         = _cfg.CONTROLM_FOLDER or "—"
+    server         = _cfg.CONTROLM_SERVER or "—"
+
+    if confluence_url:
+        job_href   = f"{confluence_url}/{job_name}"
+        job_anchor = (
+            f'<a href="{job_href}" target="_blank" style="'
+            f'color:#0052CC;font-weight:700;font-size:15px;text-decoration:none;">'
+            f'{job_name}</a>'
+        )
+    else:
+        job_anchor = f'<span style="font-weight:700;font-size:15px;">{job_name}</span>'
+
+    # Confluence "C" icon badge
+    c_icon = (
+        '<span style="display:inline-flex;align-items:center;justify-content:center;'
+        'width:22px;height:22px;background:#0052CC;color:#fff;border-radius:4px;'
+        'font-size:12px;font-weight:900;margin-right:8px;">C</span>'
+    )
+
+    st.markdown("**Control-M Job**")
+    st.markdown(
+        f'<div style="background:#F0F4FF;border:1px solid #C7D2FE;border-radius:8px;'
+        f'padding:12px 16px;display:inline-block;min-width:360px;">'
+        f'<div style="display:flex;align-items:center;margin-bottom:6px;">'
+        f'{c_icon}{job_anchor}</div>'
+        f'<div style="font-size:12px;color:#374151;">'
+        f'<span style="margin-right:16px;">📁 <strong>Folder:</strong> {folder}</span>'
+        f'<span>🖥️ <strong>Server:</strong> {server}</span>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Impacted tables & views ───────────────────────────────────────────────
+    objects = doc_md.get("impacted_objects", [])
+    if not objects:
+        return
+
+    st.markdown("**Impacted Tables & Views**")
+
+    _TYPE_STYLE = {
+        "table": ("#DBEAFE", "#1E40AF", "TABLE"),
+        "view":  ("#D1FAE5", "#065F46", "VIEW"),
+    }
+    _OP_STYLE = {
+        "read":       ("#EDE9FE", "#5B21B6", "READ"),
+        "write":      ("#FEE2E2", "#991B1B", "WRITE"),
+        "read/write": ("#FFF7ED", "#92400E", "READ/WRITE"),
+    }
+
+    def _obj_card(obj: dict) -> str:
+        obj_type = obj.get("type", "table").lower()
+        operation = obj.get("operation", "read").lower()
+        name = obj.get("name", "—")
+        desc = obj.get("description", "")
+        t_bg, t_color, t_label = _TYPE_STYLE.get(obj_type, _TYPE_STYLE["table"])
+        o_bg, o_color, o_label = _OP_STYLE.get(operation, _OP_STYLE["read"])
+        return (
+            f'<div style="border:1px solid #E5E7EB;border-radius:8px;padding:10px 12px;'
+            f'background:#FAFAFA;height:100%;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">'
+            f'<span style="background:{t_bg};color:{t_color};font-size:10px;font-weight:700;'
+            f'padding:2px 7px;border-radius:4px;">{t_label}</span>'
+            f'<span style="background:{o_bg};color:{o_color};font-size:10px;font-weight:700;'
+            f'padding:2px 7px;border-radius:4px;">{o_label}</span>'
+            f'</div>'
+            f'<div style="font-family:monospace;font-size:12px;font-weight:700;color:#1F2937;'
+            f'word-break:break-all;margin-bottom:4px;">{name}</div>'
+            f'<div style="font-size:11px;color:#6B7280;line-height:1.4;">{desc}</div>'
+            f'</div>'
+        )
+
+    cols = st.columns(3)
+    for idx, obj in enumerate(objects[:10]):
+        with cols[idx % 3]:
+            st.markdown(_obj_card(obj), unsafe_allow_html=True)
+            st.markdown("")  # spacing
+
+    # Legend
+    st.markdown(
+        '<div style="margin-top:8px;font-size:11px;color:#6B7280;">'
+        '<strong>Legend — Type:</strong> '
+        '<span style="background:#DBEAFE;color:#1E40AF;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700;">TABLE</span> '
+        '<span style="background:#D1FAE5;color:#065F46;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700;">VIEW</span> '
+        '&nbsp;&nbsp;<strong>Operation:</strong> '
+        '<span style="background:#EDE9FE;color:#5B21B6;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700;">READ</span> '
+        '<span style="background:#FEE2E2;color:#991B1B;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700;">WRITE</span> '
+        '<span style="background:#FFF7ED;color:#92400E;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700;">READ/WRITE</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def render_dag_suggestions(raw_json: str) -> None:
-    """Render optimise_dag result: list of DAG structural improvement suggestions."""
+    """Render optimise_dag result: doc_md panel + DAG structural improvement suggestions."""
     try:
         data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
     except Exception:
@@ -169,27 +280,35 @@ def render_dag_suggestions(raw_json: str) -> None:
     suggestions = data.get("suggestions", [])
     if isinstance(suggestions, dict):
         suggestions = suggestions.get("suggestions", [])
+    doc_md = data.get("doc_md", {})
 
     st.subheader(f"DAG Optimisation: {dag_id}")
 
+    # Doc MD panel first
+    if doc_md:
+        _render_doc_md_panel(doc_md, dag_id)
+        st.divider()
+
+    # Suggestions
     if not suggestions:
         st.info("No optimisation suggestions found — DAG is already well-structured.")
         return
+
+    _CAT_LABELS = {
+        "dag_loading":   "🔧 DAG Loading",
+        "modernisation": "⚡ Modernisation",
+        "structural":    "🏗️ Structural",
+    }
 
     by_category: dict = {}
     for s in suggestions:
         cat = s.get("category", "general")
         by_category.setdefault(cat, []).append(s)
 
-    _CAT_LABELS = {
-        "dag_loading":    "🔧 DAG Loading",
-        "modernisation":  "⚡ Modernisation",
-        "structural":     "🏗️ Structural",
-    }
-
+    st.markdown("**Optimisation Suggestions**")
     for cat, items in by_category.items():
         label = _CAT_LABELS.get(cat, cat.title())
-        st.markdown(f"**{label}** ({len(items)} suggestion{'s' if len(items) != 1 else ''})")
+        st.markdown(f"_{label}_ — {len(items)} suggestion{'s' if len(items) != 1 else ''}")
         for s in items:
             conf = s.get("confidence", "")
             badge = _IMPACT_BADGES.get(conf, "")
