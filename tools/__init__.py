@@ -63,6 +63,10 @@ from tools.code_tools import (
     optimise_file,
     optimise_folder,
 )
+from tools.browse_tools import (
+    browse_gcs,
+    browse_git,
+)
 
 ALL_TOOLS = [
     # Excel / mapping
@@ -112,6 +116,9 @@ ALL_TOOLS = [
     compare_git_gcs,
     optimise_file,
     optimise_folder,
+    # File browser
+    browse_gcs,
+    browse_git,
     # User
     save_query,
     get_saved_queries,

@@ -279,6 +279,7 @@ import renderers.reconciliation_panel as _rp
 import renderers.optimised_file_viewer as _ofv
 import renderers.lineage_graph as _lg
 import renderers.schema_audit_panel as _sap
+import renderers.file_browser as _fb
 
 
 def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
@@ -354,6 +355,12 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
 
     if "run_schema_audit" in tools_called:
         _sap.render_schema_audit(tools_called["run_schema_audit"])
+
+    if "browse_gcs" in tools_called:
+        _fb.render_file_browser(tools_called["browse_gcs"])
+
+    if "browse_git" in tools_called:
+        _fb.render_file_browser(tools_called["browse_git"])
 
 
 # ── Chat history ──────────────────────────────────────────────────────────────
