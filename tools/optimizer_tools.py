@@ -115,11 +115,14 @@ Return JSON only — a single object with exactly this structure (no markdown, n
     ]
   }
 }
-Populate impacted_objects with up to 10 database objects (tables and views) that this DAG reads from or writes to.
-Infer them from the SQL file names, operator parameters (bigquery_conn_id, destination_dataset_table, sql params),
-and any SQL content provided. Include a mix of source (read) and target (write) objects.
-Schema-qualify every name (e.g. project.dataset.table or dataset.table).
-If you cannot determine the exact schema, use a placeholder like dataset.table_name."""
+IMPORTANT — impacted_objects MUST be extracted from the RENDERED SQL FROM TASKS section above.
+Read every SQL block provided and identify:
+  • Tables/views in FROM clauses, JOIN clauses → operation: "read"
+  • Tables in INSERT INTO / CREATE OR REPLACE TABLE / MERGE INTO / destination_dataset_table → operation: "write"
+  • Tables that appear in both read and write positions → operation: "read/write"
+Include up to 10 objects. Schema-qualify every name as it appears in the SQL (project.dataset.table or dataset.table).
+Distinguish tables from views: if a name ends in _view, _vw, _v, or appears only in SELECT sources without DML, mark as "view"; otherwise "table".
+Do NOT invent names — only use names that literally appear in the SQL provided."""
 
 
 def _call_llm(system: str, user_content: str) -> str:
@@ -240,34 +243,77 @@ def optimise_dag(composer_env: str, dag_id: str) -> str:
     Tailored to the Airflow version from env vars. HARD CONSTRAINT: no functional changes.
     Returns JSON with suggestions [{description, current_code, suggested_code, reason, category, confidence}]
     and doc_md {overview, control_m_job, impacted_objects}."""
-    import re as _re
     start = time.time()
     try:
         source = _fetch_dag_source(dag_id, composer_env) or ""
         if not source:
             return json.dumps(_dag_source_not_found_error(dag_id, composer_env))
 
-        # Best-effort: fetch SQL files referenced in the DAG to enrich doc_md generation
+        # Fetch rendered SQL from every task via Airflow API (accurate table names)
         sql_context = ""
-        sql_refs = list(dict.fromkeys(_re.findall(r"['\"]([^'\"]*\.sql)['\"]", source)))
-        for sql_ref in sql_refs[:6]:
+        try:
+            tasks_data = _get(composer_env, f"/dags/{dag_id}/tasks")
+            tasks = tasks_data.get("tasks", [])
+
+            run_id = None
             try:
-                sql_content = _fetch_file_from_git(sql_ref)
-                if sql_content:
-                    sql_context += f"\n\n--- SQL file: {sql_ref} ---\n{sql_content[:2500]}"
+                runs_data = _get(composer_env, f"/dags/{dag_id}/dagRuns", {
+                    "limit": 5, "order_by": "-start_date", "state": "success",
+                })
+                if runs_data.get("dag_runs"):
+                    run_id = runs_data["dag_runs"][0]["dag_run_id"]
             except Exception:
                 pass
+
+            for task in tasks[:20]:
+                task_id = task.get("task_id", "")
+                sql = None
+
+                # Rendered fields first (Jinja-resolved, real table names)
+                if run_id:
+                    try:
+                        inst = _get(
+                            composer_env,
+                            f"/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id}/renderedFields",
+                        )
+                        for field in ["sql", "query", "bql"]:
+                            if inst.get(field):
+                                sql = inst[field]
+                                break
+                    except Exception:
+                        pass
+
+                # Fall back to task definition (may contain Jinja templates)
+                if not sql:
+                    try:
+                        task_def = _get(composer_env, f"/dags/{dag_id}/tasks/{task_id}")
+                        for field in ["sql", "query", "bql"]:
+                            val = task_def.get(field, "")
+                            if val and str(val).strip():
+                                sql = str(val)
+                                break
+                    except Exception:
+                        pass
+
+                if sql and sql.strip():
+                    sql_context += f"\n\n--- Rendered SQL · task: {task_id} ---\n{sql[:3000]}"
+        except Exception:
+            pass
 
         sdk_info = config.get_composer_sdk_info(composer_env)
         system = _DAG_OPTIMISE_SYSTEM_PROMPT.format(**sdk_info)
         user_content = f"Optimise this DAG (id: {dag_id}):\n\n{source}"
         if sql_context:
-            user_content += f"\n\n=== REFERENCED SQL FILES (for doc_md context) ==={sql_context}"
+            user_content += (
+                "\n\n=== RENDERED SQL FROM TASKS "
+                "(extract all table/view names for impacted_objects from here) ==="
+                + sql_context
+            )
 
         raw = _call_llm(system, user_content)
         parsed = extract_json(raw)
 
-        # Handle both new format {suggestions, doc_md} and legacy list format
+        # Handle both new {suggestions, doc_md} format and legacy list format
         if isinstance(parsed, list):
             suggestions = parsed
             doc_md = {}
@@ -275,7 +321,8 @@ def optimise_dag(composer_env: str, dag_id: str) -> str:
             suggestions = parsed.get("suggestions", [])
             doc_md = parsed.get("doc_md", {})
 
-        log_audit("optimizer_tools", composer_env, f"optimise_dag:{dag_id}", duration_ms=int((time.time()-start)*1000))
+        log_audit("optimizer_tools", composer_env, f"optimise_dag:{dag_id}",
+                  duration_ms=int((time.time() - start) * 1000))
         return json.dumps({"dag_id": dag_id, "suggestions": suggestions, "doc_md": doc_md})
     except Exception as exc:
         return json.dumps({"error": str(exc)})

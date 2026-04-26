@@ -76,11 +76,15 @@ BEHAVIOUR RULES:
    get_sql_flags → optimise_sql → validate_optimisation.
    Never present optimised SQL without a validation verdict.
    For a whole DAG's SQLs use optimise_all_dag_sqls (it runs all steps internally).
-   FILE-BASED optimisation (user provides a file path, filename, GCS url, or Git path) —
-   ALWAYS use optimise_file for .sql or .py files. Do NOT call get_sql_flags, optimise_sql,
-   or validate_optimisation for file-based requests — those tools require inline SQL text
-   and validate_optimisation runs live BigQuery queries which will fail on un-rendered templates.
-   NEVER call read_file before optimise_file — optimise_file fetches the file internally.
+   FILE-BASED optimisation:
+   • SQL files (.sql) — ALWAYS use optimise_file. Never call get_sql_flags, optimise_sql,
+     read_file, or validate_optimisation; optimise_file fetches and optimises in one call.
+   • DAG Python files / "optimise DAG <name>" requests — ALWAYS use optimise_dag(composer_env, dag_id).
+     optimise_dag fetches the source, pulls rendered SQL from every task, and generates
+     structural suggestions PLUS a doc_md panel (overview, Control-M job, impacted tables).
+     Never use optimise_file for a DAG — it skips the rendered-SQL analysis and doc_md entirely.
+   • Non-DAG Python files — use optimise_file.
+   • Folders — use optimise_folder.
 6. For cross-system questions call tools from each relevant system and
    synthesise a single unified answer.
 7. Optimisation NEVER changes functional output, business logic, column names,

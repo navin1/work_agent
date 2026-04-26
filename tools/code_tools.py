@@ -228,26 +228,18 @@ ABSOLUTE CONSTRAINTS (never violate):
 - Do NOT change GROUP BY keys, ORDER BY expressions, or aggregation functions.
 - Optimise ONLY for: partition filtering, clustering keys, JOIN order, CTE extraction, subquery elimination, scan reduction, slot efficiency.
 
-The optimised_content field MUST begin with a structured block comment header in EXACTLY this format
-(replace the placeholder text with accurate content derived from analysing the SQL — be crisp):
+The optimised_content field MUST begin with this block comment header — fill in the OVERVIEW
+with 3 to 4 plain-English sentences describing what this SQL does, what it filters or transforms,
+and what it produces. Be crisp. No bullet points. No sub-sections. Max 4 lines of text.
 
 /*
  * ============================================================================
  * OVERVIEW
  * ============================================================================
- * <3-4 plain-English sentences: what this SQL does, what it filters/transforms,
- *  and what it produces. Max 4 lines. No bullet points.>
- *
- * ----------------------------------------------------------------------------
- * INPUTS
- * ----------------------------------------------------------------------------
- * <schema.source_table_or_view>  -- <one-line description of what this source holds>
- * <...one entry per source read by this SQL>
- *
- * ----------------------------------------------------------------------------
- * OUTPUTS
- * ----------------------------------------------------------------------------
- * <schema.target_table>  -- <load strategy: truncate-and-load | merge | append | insert>
+ * <sentence 1: what this SQL does overall>
+ * <sentence 2: what data it reads / what filters it applies>
+ * <sentence 3: what it produces / where the output goes>
+ * <sentence 4 (optional): any key business rule or transformation worth noting>
  * ============================================================================
  */
 
