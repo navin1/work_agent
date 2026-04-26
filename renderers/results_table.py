@@ -148,7 +148,61 @@ def _build_task_flow_graph(data: dict):
     return nodes, edges, content_map
 
 
+def _fetch_task_sql(composer_env: str, dag_id: str, task_id: str, run_id: str) -> str:
+    """Fetch rendered SQL for a task. Tries the specific run first, then recent successful runs."""
+    from tools.composer_tools import (
+        _get, _enc, _extract_rendered_sql, _best_sql,
+        _get_sql_file_path, _fetch_sql_file,
+    )
+    from core.sql_formatter import format_sql, extract_sql
+
+    raw_sql = rendered_sql = None
+
+    # Raw SQL from task definition
+    try:
+        task_data = _get(composer_env, f"/dags/{dag_id}/tasks/{task_id}")
+        path = _get_sql_file_path(task_data)
+        if path:
+            raw_sql = _fetch_sql_file(path)
+        if not raw_sql:
+            raw_sql = extract_sql(task_data)
+    except Exception:
+        pass
+
+    # Rendered SQL — try the specific run_id first
+    if run_id and run_id not in ("", "—"):
+        try:
+            ti = _get(composer_env,
+                      f"/dags/{_enc(dag_id)}/dagRuns/{_enc(run_id)}/taskInstances/{_enc(task_id)}")
+            rendered_sql = _extract_rendered_sql(ti)
+        except Exception:
+            pass
+
+    # Fall back to recent successful runs
+    if not rendered_sql:
+        try:
+            runs = _get(composer_env, f"/dags/{dag_id}/dagRuns",
+                        {"limit": 10, "order_by": "-execution_date", "state": "success"})
+            for r in runs.get("dag_runs", []):
+                try:
+                    ti = _get(composer_env,
+                              f"/dags/{_enc(dag_id)}/dagRuns/{_enc(r['dag_run_id'])}/taskInstances/{_enc(task_id)}")
+                    rendered_sql = _extract_rendered_sql(ti)
+                    if rendered_sql:
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    best = _best_sql(raw_sql, rendered_sql)
+    return format_sql(best) if best else ""
+
+
 def _render_task_content_panel(info: dict) -> None:
+    import streamlit.components.v1 as components
+    from core import monaco
+
     st.divider()
     node_type = info["type"]
 
@@ -179,12 +233,31 @@ def _render_task_content_panel(info: dict) -> None:
             st.markdown(f"[↗ Open in Airflow]({task_url})")
 
         if composer_env:
-            st.info("Rendered SQL is not included in the task graph. Fetch it on demand.")
-            if st.button("⬇ Fetch SQL", key=f"fetch_sql_tg_{dag_id}__{task_id}"):
-                st.session_state.chat_prefill = (
-                    f"get task sql for {task_id} in dag {dag_id} in {composer_env}"
+            sql_key = f"tg_sql_{dag_id}__{task_id}"
+            if sql_key not in st.session_state:
+                with st.spinner("Fetching SQL…"):
+                    try:
+                        st.session_state[sql_key] = _fetch_task_sql(
+                            composer_env, dag_id, task_id, run_id
+                        )
+                    except Exception as exc:
+                        st.session_state[sql_key] = ""
+                        st.warning(f"Could not fetch SQL: {exc}")
+            sql = st.session_state[sql_key]
+            if sql:
+                st.markdown("**Rendered SQL:**")
+                lines = sql.count("\n") + 1
+                h = min(max(300, lines * 22 + 60), 900)
+                components.html(monaco.editor(sql, language="sql", height=h), height=h + 20)
+                st.download_button(
+                    "⬇ Download SQL",
+                    data=sql.encode("utf-8"),
+                    file_name=f"{dag_id}__{task_id}.sql",
+                    mime="text/plain",
+                    key=f"dl_tg_sql_{dag_id}__{task_id}",
                 )
-                st.rerun()
+            else:
+                st.info("No SQL found for this task.")
 
     elif node_type == "child_dag":
         child_dag_id = info["dag_id"]
