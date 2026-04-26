@@ -356,8 +356,10 @@ def _inject_dag_docmd(source: str, dag_id: str, doc_md: dict) -> str:
     import re as _re
     block = _build_dag_docmd_variable(dag_id, doc_md)
 
-    # Replace an existing dag_doc_md = """...""" block (LLM may have generated its own)
-    existing = _re.search(r'dag_doc_md\s*=\s*""".*?"""', source, _re.DOTALL)
+    # Replace an existing dag_doc_md variable regardless of quote style (""" or ''')
+    existing = _re.search(
+        r'dag_doc_md\s*=\s*(?:""".*?"""|\'\'\'.*?\'\'\')', source, _re.DOTALL
+    )
     if existing:
         return source[: existing.start()] + block + source[existing.end():]
 
