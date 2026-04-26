@@ -165,10 +165,31 @@ def render_file_browser(raw_json: str) -> None:
         height = min(max(300, lines * 18 + 40), 900)
         components.html(monaco.editor(content, language=lang, height=height), height=height + 20)
 
-    st.download_button(
-        "⬇ Download",
-        data=content.encode("utf-8"),
-        file_name=file_name,
-        mime="text/plain",
-        key=f"dl_fb_{source}_{selected_item['path'].replace('/', '_')}",
-    )
+    _safe_key = selected_item["path"].replace("/", "_")
+    col_dl, col_opt, _ = st.columns([1, 1, 5])
+
+    with col_dl:
+        st.download_button(
+            "⬇ Download",
+            data=content.encode("utf-8"),
+            file_name=file_name,
+            mime="text/plain",
+            key=f"dl_fb_{source}_{_safe_key}",
+        )
+
+    with col_opt:
+        _ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+        if _ext in ("sql", "py", "yaml", "yml", "sh"):
+            if source == "gcs":
+                _file_ref = selected_item.get("gcs_path") or f"gs://{bucket}/{selected_item['path']}"
+            else:
+                _file_ref = selected_item["path"]
+
+            if _ext == "sql":
+                _prompt = f"Optimise the SQL file at {_file_ref}"
+            else:
+                _prompt = f"Optimise the file {_file_ref}"
+
+            if st.button("⚡ Optimise", key=f"opt_fb_{source}_{_safe_key}"):
+                st.session_state.chat_prefill = _prompt
+                st.rerun()
