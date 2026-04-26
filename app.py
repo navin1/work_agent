@@ -294,7 +294,9 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
         except Exception:
             continue
 
-    if "trace_from_excel" in tools_called:
+    has_lineage = "trace_from_excel" in tools_called
+
+    if has_lineage:
         _lg.render_lineage_graph(tools_called["trace_from_excel"], is_history=is_history)
 
     if "list_dags" in tools_called:
@@ -306,10 +308,11 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
     if "get_dag_rendered_files" in tools_called:
         _rt.render_dag_rendered_files(tools_called["get_dag_rendered_files"])
 
-    if "get_dag_task_graph" in tools_called:
+    # Suppress task graph / DAG details when the lineage graph already covers them
+    if "get_dag_task_graph" in tools_called and not has_lineage:
         _rt.render_dag_task_graph(tools_called["get_dag_task_graph"])
 
-    if "get_dag_details" in tools_called:
+    if "get_dag_details" in tools_called and not has_lineage:
         _rt.render_dag_details(tools_called["get_dag_details"])
 
     if "query_bigquery" in tools_called or "query_excel_data" in tools_called:
@@ -355,11 +358,19 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
 
 # ── Chat history ──────────────────────────────────────────────────────────────
 
-for msg in st.session_state.messages:
+# Find the index of the last assistant message so its panels stay interactive.
+# All earlier assistant messages use the static summary (no streamlit-flow component)
+# which prevents multiple flow instances from triggering competing reruns.
+_last_assistant_idx = max(
+    (i for i, m in enumerate(st.session_state.messages) if m["role"] == "assistant"),
+    default=-1,
+)
+
+for _i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if "panels" in msg:
-            dispatch_renderers(msg["panels"], is_history=True)
+            dispatch_renderers(msg["panels"], is_history=(_i != _last_assistant_idx))
 
 
 # ── Chat input ────────────────────────────────────────────────────────────────
