@@ -165,17 +165,13 @@ REWRITE RULES for optimised_content — apply ALL that are applicable:
   8. HARD CONSTRAINTS — task IDs, SQL file include paths, params dict, label values,
      bash_command strings, and the full dependency graph must be identical to the original.
 
-  9. DAG DOC_MD VARIABLE — add a dag_doc_md Markdown string and wire it into Airflow:
-     a. Declare the variable BEFORE the DAG constructor (the server will replace its
-        content, so use a placeholder if needed):
-          dag_doc_md = '''
-          # {CONTROL_M_JOB_NAME}
-          ...
-          '''
-     b. Pass it in the DAG constructor kwargs:
-          doc_md = dag_doc_md,
+  9. DAG DOC_MD VARIABLE — wire dag_doc_md into Airflow (server injects the content):
+     a. Add the line  `dag_doc_md = ""`  immediately before the DAG constructor.
+        The server will replace it with the full Markdown string — do NOT write
+        any multiline string content yourself.
+     b. Pass it in the DAG constructor kwargs:  `doc_md = dag_doc_md,`
      c. Set it on the dag object as the FIRST statement inside `with DAG(...) as dag:`:
-          dag.doc_md = dag_doc_md
+          `dag.doc_md = dag_doc_md`
      The variable name MUST be exactly `dag_doc_md` — do not rename it.
 
 Rules for impacted_objects (read from the RENDERED SQL blocks if provided):
@@ -356,9 +352,11 @@ def _inject_dag_docmd(source: str, dag_id: str, doc_md: dict) -> str:
     import re as _re
     block = _build_dag_docmd_variable(dag_id, doc_md)
 
-    # Replace an existing dag_doc_md variable regardless of quote style (""" or ''')
+    # Replace any existing dag_doc_md assignment regardless of form
+    # Matches:  = """..."""  |  = '''...'''  |  = ""  |  = ''  |  = "..."  |  = '...'
     existing = _re.search(
-        r'dag_doc_md\s*=\s*(?:""".*?"""|\'\'\'.*?\'\'\')', source, _re.DOTALL
+        r'dag_doc_md\s*=\s*(?:""".*?"""|\'\'\'.*?\'\'\'|"[^"]*"|\'[^\']*\')',
+        source, _re.DOTALL,
     )
     if existing:
         return source[: existing.start()] + block + source[existing.end():]

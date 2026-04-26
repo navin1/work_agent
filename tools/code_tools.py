@@ -299,12 +299,9 @@ AIRFLOW DAG REWRITE RULES (apply when the file defines an Airflow DAG):
 6. SECTION DELIMITER COMMENTS — remove comments that only restate the task name
    (e.g. ##-----osr_rps_s_fee_item_snap_dag_start). Keep substantive comments.
 
-7. DAG DOC_MD VARIABLE — add a dag_doc_md Markdown string and wire it:
-   a. Declare it BEFORE the DAG constructor (server will replace the content):
-        dag_doc_md = '''
-        # {CONTROL_M_JOB_NAME}
-        ...
-        '''
+7. DAG DOC_MD VARIABLE — wire dag_doc_md into Airflow (server injects the content):
+   a. Add the line  `dag_doc_md = ""`  immediately before the DAG constructor.
+      Do NOT write any multiline string — the server replaces this with the full Markdown.
    b. Pass it to the DAG constructor: `doc_md=dag_doc_md,`
    c. Set it on the dag object as the FIRST line inside `with DAG(...) as dag:`:
         dag.doc_md = dag_doc_md
