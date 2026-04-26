@@ -1,8 +1,200 @@
 """Results table renderer with export buttons and explain action."""
 import json
 import io
+from urllib.parse import quote
 import pandas as pd
 import streamlit as st
+
+# ── Flow diagram constants (used by render_dag_task_graph) ────────────────────
+
+_TG_STATE_COLOR = {
+    "success":      "#10B981",
+    "failed":       "#EF4444",
+    "running":      "#3B82F6",
+    "queued":       "#F59E0B",
+    "up_for_retry": "#F97316",
+    "skipped":      "#9CA3AF",
+}
+_TG_STATE_ICON = {
+    "success":      "✅",
+    "failed":       "❌",
+    "running":      "🔄",
+    "queued":       "⏳",
+    "up_for_retry": "🔁",
+    "skipped":      "⏭",
+}
+_TG_TASK_COLOR     = "#8B5CF6"
+_TG_CHILD_DAG_COLOR = "#6366F1"
+
+
+def _tg_node_style(bg: str, min_w: str = "155px") -> dict:
+    return {
+        "background":   bg,
+        "color":        "white",
+        "border":       "2px solid rgba(255,255,255,0.18)",
+        "borderRadius": "10px",
+        "padding":      "10px 14px",
+        "fontSize":     "11px",
+        "fontWeight":   "600",
+        "minWidth":     min_w,
+        "textAlign":    "center",
+        "whiteSpace":   "pre-wrap",
+        "lineHeight":   "1.55",
+        "boxShadow":    "0 2px 8px rgba(0,0,0,0.25)",
+    }
+
+
+def _tg_fmt_dur(secs) -> str:
+    if secs is None:
+        return ""
+    s = int(secs)
+    return f"{s // 60}m {s % 60}s" if s >= 60 else f"{s}s"
+
+
+def _build_task_flow_graph(data: dict):
+    from streamlit_flow.elements import StreamlitFlowNode, StreamlitFlowEdge
+
+    dag_id       = data.get("dag_id", "")
+    tasks        = data.get("tasks", [])
+    airflow_url  = data.get("airflow_url", "")
+    run_id       = data.get("run_id", "")
+    composer_env = data.get("composer_env", "")
+
+    nodes: list = []
+    edges: list = []
+    content_map: dict = {}
+    child_dag_nodes_added: set = set()
+
+    for task in tasks:
+        task_id     = task["task_id"]
+        task_nid    = f"tg_task__{dag_id}__{task_id}"
+        operator    = task.get("operator", "")
+        task_state  = task.get("state")
+        trigger_dag = task.get("trigger_dag_id")
+        is_trigger  = "TriggerDagRun" in operator
+
+        op_short = (
+            operator
+            .replace("Operator", "")
+            .replace("BigQuery", "BQ")
+            .strip()
+        )
+        dur = _tg_fmt_dur(task.get("duration_seconds"))
+
+        label = f"{'🔗' if is_trigger else '📋'}  {task_id}"
+        if op_short:
+            label += f"\n{op_short}"
+        if task_state:
+            badge = f"{_TG_STATE_ICON.get(task_state, '⬜')} {task_state}"
+            if dur:
+                badge += f"  ·  {dur}"
+            label += f"\n{badge}"
+
+        task_bg      = _TG_STATE_COLOR.get(task_state, _TG_TASK_COLOR)
+        has_children = bool(task.get("depends_on")) or bool(is_trigger and trigger_dag)
+
+        nodes.append(StreamlitFlowNode(
+            id=task_nid, pos=(0, 0),
+            data={"label": label},
+            node_type="default" if has_children else "output",
+            source_position="right", target_position="left",
+            selectable=True,
+            style=_tg_node_style(task_bg),
+        ))
+
+        for ds_id in task.get("depends_on", []):
+            ds_nid = f"tg_task__{dag_id}__{ds_id}"
+            edges.append(StreamlitFlowEdge(
+                id=f"e_{task_nid}__{ds_nid}",
+                source=task_nid, target=ds_nid,
+                edge_type="smoothstep", animated=True,
+            ))
+
+        content_map[task_nid] = {
+            "type":             "task",
+            "dag_id":           dag_id,
+            "task_id":          task_id,
+            "operator":         operator,
+            "state":            task_state,
+            "duration_seconds": task.get("duration_seconds"),
+            "composer_env":     composer_env,
+            "airflow_url":      airflow_url,
+            "run_id":           run_id,
+        }
+
+        if is_trigger and trigger_dag and trigger_dag not in child_dag_nodes_added:
+            child_nid = f"tg_child_dag__{trigger_dag}"
+            nodes.append(StreamlitFlowNode(
+                id=child_nid, pos=(0, 0),
+                data={"label": f"⚙  {trigger_dag}\n(child DAG)"},
+                node_type="output",
+                source_position="right", target_position="left",
+                selectable=True,
+                style=_tg_node_style(_TG_CHILD_DAG_COLOR, min_w="180px"),
+            ))
+            edges.append(StreamlitFlowEdge(
+                id=f"e_{task_nid}__child__{trigger_dag}",
+                source=task_nid, target=child_nid,
+                edge_type="smoothstep", animated=False,
+            ))
+            content_map[child_nid] = {
+                "type":        "child_dag",
+                "dag_id":      trigger_dag,
+                "parent_dag":  dag_id,
+                "airflow_url": airflow_url,
+            }
+            child_dag_nodes_added.add(trigger_dag)
+
+    return nodes, edges, content_map
+
+
+def _render_task_content_panel(info: dict) -> None:
+    st.divider()
+    node_type = info["type"]
+
+    if node_type == "task":
+        task_id      = info["task_id"]
+        dag_id       = info["dag_id"]
+        operator     = info.get("operator", "")
+        state        = info.get("state")
+        dur_s        = info.get("duration_seconds")
+        airflow_url  = info.get("airflow_url", "")
+        run_id       = info.get("run_id", "")
+        composer_env = info.get("composer_env", "")
+
+        st.markdown(f"#### 📋  {task_id}")
+        c1, c2, c3 = st.columns(3)
+        c1.markdown(f"**DAG:** `{dag_id}`")
+        c2.markdown(f"**Operator:** `{operator or '—'}`")
+        state_badge = f"{_TG_STATE_ICON.get(state, '⬜')} `{state}`" if state else "`—`"
+        c3.markdown(f"**State:** {state_badge}")
+        if dur_s:
+            st.caption(f"Duration: {_tg_fmt_dur(dur_s)}")
+
+        if airflow_url and run_id and run_id != "—":
+            task_url = (
+                f"{airflow_url}/dags/{dag_id}/grid"
+                f"?dag_run_id={quote(str(run_id), safe='')}&task_id={task_id}"
+            )
+            st.markdown(f"[↗ Open in Airflow]({task_url})")
+
+        if composer_env:
+            st.info("Rendered SQL is not included in the task graph. Fetch it on demand.")
+            if st.button("⬇ Fetch SQL", key=f"fetch_sql_tg_{dag_id}__{task_id}"):
+                st.session_state.chat_prefill = (
+                    f"get task sql for {task_id} in dag {dag_id} in {composer_env}"
+                )
+                st.rerun()
+
+    elif node_type == "child_dag":
+        child_dag_id = info["dag_id"]
+        parent_dag   = info.get("parent_dag", "")
+        airflow_url  = info.get("airflow_url", "")
+
+        st.markdown(f"#### ⚙  {child_dag_id}")
+        st.caption(f"Triggered by: **{parent_dag}**")
+        if airflow_url:
+            st.markdown(f"[↗ Open DAG in Airflow]({airflow_url}/dags/{child_dag_id}/grid)")
 
 
 def render_dag_list(raw_json: str) -> None:
@@ -151,43 +343,100 @@ def render_dag_task_graph(raw_json: str) -> None:
         st.error(f"Task graph error: {data['error']}")
         return
 
-    dag_id    = data.get("dag_id", "")
-    run_id    = data.get("run_id", "—")
-    run_state = data.get("run_state", "")
-    tasks     = data.get("tasks", [])
+    dag_id       = data.get("dag_id", "")
+    run_id       = data.get("run_id", "—")
+    run_state    = data.get("run_state", "")
+    tasks        = data.get("tasks", [])
+    airflow_url  = data.get("airflow_url", "")
 
     STATE_ICON = {
         "success": "✅", "failed": "❌", "running": "🔄",
         "skipped": "⏭", "upstream_failed": "⚠️", "queued": "⏳",
     }
-    rows = [
-        {
-            "Task": t.get("task_id", ""),
+
+    # ── Section 1: Task Table ─────────────────────────────────────────────────
+    state_label = f"  ·  Run state: **{run_state}**" if run_state else ""
+    st.caption(f"**{dag_id}**  ·  run: `{run_id}`{state_label}")
+
+    rows = []
+    for t in tasks:
+        task_id = t.get("task_id", "")
+        row = {
+            "Task": task_id,
             "Operator": t.get("operator", "").replace("Operator", ""),
             "State": STATE_ICON.get(t.get("state", ""), "○") + " " + (t.get("state") or "—"),
             "Duration (s)": round(t["duration_seconds"], 1) if t.get("duration_seconds") else "—",
             "Try": t.get("try_number") or "—",
             "Depends On": ", ".join(t.get("depends_on") or []) or "—",
         }
-        for t in tasks
-    ]
+        if airflow_url and run_id and run_id != "—":
+            row["Airflow"] = (
+                f"{airflow_url}/dags/{dag_id}/grid"
+                f"?dag_run_id={quote(str(run_id), safe='')}&task_id={task_id}"
+            )
+        rows.append(row)
+
     df = pd.DataFrame(rows)
 
-    state_label = f"  ·  Run state: **{run_state}**" if run_state else ""
-    st.caption(f"**{dag_id}**  ·  run: `{run_id}`{state_label}")
-    st.dataframe(df, hide_index=True, use_container_width=True)
+    col_config = {}
+    if airflow_url and "Airflow" in df.columns:
+        col_config["Airflow"] = st.column_config.LinkColumn("Airflow ↗", display_text="Open ↗")
 
-    diagram = data.get("diagram", "")
-    if diagram:
-        with st.expander("Dependency diagram", expanded=False):
-            st.code(diagram, language=None)
+    st.dataframe(df, hide_index=True, use_container_width=True,
+                 column_config=col_config if col_config else None)
 
     col1, _ = st.columns([1, 5])
     with col1:
         buf = io.StringIO()
-        df.to_csv(buf, index=False)
+        df.drop(columns=["Airflow"], errors="ignore").to_csv(buf, index=False)
         st.download_button("⬇ CSV", buf.getvalue(), f"{dag_id}_tasks.csv",
                            mime="text/csv", key=f"tg_csv_{id(raw_json)}")
+
+    # ── Section 2: Dependency Diagram ─────────────────────────────────────────
+    st.markdown("#### Dependency Diagram")
+    st.caption("🖱 Click any node to view details and fetch SQL.")
+    try:
+        from streamlit_flow import streamlit_flow
+        from streamlit_flow.state import StreamlitFlowState
+        from streamlit_flow.layouts import TreeLayout
+    except ImportError:
+        st.warning("streamlit-flow-component not installed — cannot render visual diagram.")
+        diagram = data.get("diagram", "")
+        if diagram:
+            st.code(diagram, language=None)
+        return
+
+    state_key     = f"tg_flow_state__{dag_id}"
+    component_key = f"tg_flow__{dag_id}"
+
+    nodes, edges, content_map = _build_task_flow_graph(data)
+
+    if not nodes:
+        st.info("No tasks to display.")
+        return
+
+    if state_key not in st.session_state:
+        st.session_state[state_key] = StreamlitFlowState(nodes, edges)
+
+    new_state = streamlit_flow(
+        key=component_key,
+        state=st.session_state[state_key],
+        height=520,
+        fit_view=True,
+        get_node_on_click=True,
+        layout=TreeLayout(direction="right", node_node_spacing=100),
+        show_minimap=True,
+        show_controls=True,
+        hide_watermark=True,
+        min_zoom=0.25,
+    )
+    st.session_state[state_key] = new_state
+
+    selected_id = new_state.selected_id
+    if selected_id and selected_id in content_map:
+        _render_task_content_panel(content_map[selected_id])
+    else:
+        st.caption("No node selected — click a node to explore.")
 
 
 def render_dag_details(raw_json: str) -> None:

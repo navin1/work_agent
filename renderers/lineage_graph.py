@@ -163,10 +163,11 @@ def _build_graph(data: dict):
             edge_type="smoothstep", animated=True,
         ))
         content_map[dag_node_id] = {
-            "type":        "dag",
-            "dag_id":      dag_id,
-            "recent_jobs": recent_jobs,
-            "error":       dag_info.get("error"),
+            "type":         "dag",
+            "dag_id":       dag_id,
+            "recent_jobs":  recent_jobs,
+            "error":        dag_info.get("error"),
+            "composer_env": composer_env,
         }
 
         # ── Task nodes ────────────────────────────────────────────────────────
@@ -286,8 +287,21 @@ def _render_content_panel(info: dict) -> None:
         c2.markdown(f"**BigQuery table:** `{info['bq_table'] or '—'}`")
         c2.markdown(f"**DAGs:** {', '.join(info['dag_names']) or '—'}")
 
+        table_name = info.get("table_name")
+        if table_name:
+            with st.expander("📄 File Contents", expanded=True):
+                try:
+                    from core.duckdb_manager import get_manager
+                    import pandas as pd
+                    df = get_manager().execute(f'SELECT * FROM "{table_name}" LIMIT 500')
+                    st.caption(f"{len(df):,} rows (limit 500)")
+                    st.dataframe(df, hide_index=True, use_container_width=True)
+                except Exception as exc:
+                    st.info(f"Could not load file contents — table may not be loaded yet: {exc}")
+
     elif node_type == "dag":
-        dag_id = info["dag_id"]
+        dag_id       = info["dag_id"]
+        composer_env = info.get("composer_env", "")
         st.markdown(f"#### ⚙ {dag_id}")
         if info.get("error"):
             st.warning(f"Composer error: {info['error']}")
@@ -312,6 +326,32 @@ def _render_content_panel(info: dict) -> None:
             st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
         else:
             st.info("No recent job runs found for this DAG.")
+
+        src_key = f"lg_dag_src__{dag_id}"
+        if src_key not in st.session_state:
+            with st.spinner("Loading DAG source…"):
+                try:
+                    from tools.composer_tools import _fetch_dag_source
+                    src = _fetch_dag_source(dag_id, composer_env or None)
+                    st.session_state[src_key] = src or ""
+                except Exception as exc:
+                    st.session_state[src_key] = f"# Error fetching source: {exc}"
+        source = st.session_state.get(src_key, "")
+        if source and not source.startswith("# Error"):
+            with st.expander("🐍 DAG Source", expanded=True):
+                h = min(max(300, source.count("\n") * 18 + 40), 800)
+                components.html(monaco.editor(source, language="python", height=h), height=h + 20)
+                st.download_button(
+                    "⬇ Download DAG source",
+                    data=source.encode("utf-8"),
+                    file_name=f"{dag_id}.py",
+                    mime="text/plain",
+                    key=f"dl_lg_dagsrc_{dag_id}",
+                )
+        elif source.startswith("# Error"):
+            st.warning(source)
+        else:
+            st.info("DAG source not found (checked Airflow API, GCS, and Git).")
 
     elif node_type == "task":
         has_sql = info.get("has_sql")

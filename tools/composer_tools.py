@@ -1036,19 +1036,30 @@ def get_dag_task_graph(composer_env: str, dag_id: str, run_id: str = None) -> st
                     "operator": inst.get("operator", ""),
                 }
 
+        airflow_url = config.get_composer_info(composer_env).get("airflow_url", "")
+
         # Build task list
         tasks = []
         for tid, tdef in task_defs.items():
             state_info = task_states.get(tid, {})
+            operator = tdef.get("class_ref", {}).get("class_name", "")
+            trigger_dag_id = None
+            if "TriggerDagRun" in operator:
+                trigger_dag_id = (
+                    tdef.get("trigger_dag_id")
+                    or tdef.get("conf", {}).get("trigger_dag_id")
+                    or (tdef.get("params") or {}).get("trigger_dag_id", {}).get("value")
+                )
             tasks.append({
                 "task_id": tid,
-                "operator": tdef.get("class_ref", {}).get("class_name", ""),
+                "operator": operator,
                 "depends_on": tdef.get("downstream_task_ids", []),
                 "state": state_info.get("state"),
                 "start_time": state_info.get("start_time"),
                 "end_time": state_info.get("end_time"),
                 "duration_seconds": state_info.get("duration_seconds"),
                 "try_number": state_info.get("try_number"),
+                "trigger_dag_id": trigger_dag_id,
             })
 
         # Build ASCII dependency diagram
@@ -1058,6 +1069,8 @@ def get_dag_task_graph(composer_env: str, dag_id: str, run_id: str = None) -> st
                   row_count=len(tasks), duration_ms=int((time.time()-start)*1000))
         return safe_json({
             "dag_id": dag_id,
+            "composer_env": composer_env,
+            "airflow_url": airflow_url,
             "run_id": run_id,
             "run_state": run_state,
             "run_start": run_start,
