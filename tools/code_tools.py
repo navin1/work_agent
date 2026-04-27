@@ -14,6 +14,7 @@ from core import config
 from core.audit import log_audit
 from core.llm import get_llm
 from core.sql_formatter import format_sql
+from tools.optimizer_tools import _DAG_REWRITE_RULES
 
 
 # ── Git helpers ───────────────────────────────────────────────────────────────
@@ -251,7 +252,8 @@ Return JSON only — no markdown, no preamble:
   "overall_summary": "..."
 }"""
 
-_PY_OPT_PROMPT = """You are a Python and Apache Airflow code optimisation expert.
+_PY_OPT_PROMPT = (
+    """You are a Python and Apache Airflow code optimisation expert.
 
 ABSOLUTE CONSTRAINTS (never violate):
 - Do NOT change functional behaviour, data outputs, return values, or business logic.
@@ -265,47 +267,9 @@ ABSOLUTE CONSTRAINTS (never violate):
   must stay `from datetime import timedelta` — do NOT move timedelta to a different module.
 - Optimise ONLY for: memory efficiency, idiomatic Python, import hygiene, redundant variables.
 
-AIRFLOW DAG REWRITE RULES (apply when the file defines an Airflow DAG):
-
-1. UNUSED IMPORTS — remove complete import lines that are not referenced after rewriting.
-   Never change the form of an import. Only delete the whole line if nothing in the
-   rewritten code references that name.
-
-2. CONTEXT MANAGER — convert the bare assignment pattern to the context-manager pattern
-   and remove dag=dag from every operator:
-   BEFORE:  dag = DAG('my_dag', ...)
-            task = SomeOperator(..., dag=dag)
-   AFTER:   with DAG('my_dag', ...) as dag:
-                task = SomeOperator(...)   # dag=dag removed — inferred from context manager
-
-3. catchup=False — add to the DAG constructor if not already present.
-
-4. EMPTY queryParameters — remove `"queryParameters": []` from operator configurations.
-   It is the default value and adds no information.
-
-5. LOOP COLLAPSE — when multiple operator blocks share the same type and config shape,
-   differing only by an entity name, replace them with a for-loop.
-   RULES for the loop:
-   a. The entities list uses the FULL task name exactly as it appears in task_id
-      (e.g. "eda_osr_rps_s_fee_item_snap", not a short suffix like "fee_item_snap").
-   b. Use direct local variables (bq_start, bq_main, bq_end) — NOT a dict.
-   c. Jinja {% include %} paths MUST use Python f-strings with escaped braces:
-        f"{{% include 'bq_sql/{entity}_start.sql' %}}"
-      This produces: {% include 'bq_sql/eda_osr_rps_s_fee_item_snap_start.sql' %}
-      DO NOT use string concatenation like "{% include 'bq_sql/" + var + "...".
-   d. Set the dependency chain INSIDE the loop on a single line:
-        start_task >> bq_start >> bq_main >> bq_end >> end_task
-
-6. SECTION DELIMITER COMMENTS — remove comments that only restate the task name
-   (e.g. ##-----osr_rps_s_fee_item_snap_dag_start). Keep substantive comments.
-
-7. DAG DOC_MD VARIABLE — wire dag_doc_md into Airflow (server injects the content):
-   a. Add the line  `dag_doc_md = ""`  immediately before the DAG constructor.
-      Do NOT write any multiline string — the server replaces this with the full Markdown.
-   b. Pass it to the DAG constructor: `doc_md=dag_doc_md,`
-   c. Set it on the dag object as the FIRST line inside `with DAG(...) as dag:`:
-        dag.doc_md = dag_doc_md
-   The variable name MUST be exactly `dag_doc_md`.
+"""
+    + _DAG_REWRITE_RULES
+    + """
 
 doc_md field — MANDATORY when the file is an Airflow DAG (contains `from airflow` or `import airflow`).
 For non-DAG Python files set doc_md to null.
@@ -324,6 +288,7 @@ Return JSON only — no markdown, no preamble:
     ]
   }
 }"""
+)
 
 
 # ── Single-file optimisation (shared by both tools) ───────────────────────────
@@ -334,14 +299,25 @@ def _optimise_single(
     """AI-optimise a single file. Returns result dict or raises on failure."""
     from langchain_core.messages import SystemMessage, HumanMessage
 
-    opt_prompt = _SQL_OPT_PROMPT if ext == ".sql" else _PY_OPT_PROMPT
-    sdk_info = config.get_composer_sdk_info(composer_env) if composer_env else {}
-    if sdk_info:
-        opt_prompt = (
-            opt_prompt
-            + f"\nAirflow: {sdk_info.get('airflow_version','')}, "
-            f"Python: {sdk_info.get('python_version','')}"
-        )
+    is_airflow_dag = ext == ".py" and ("from airflow" in content or "import airflow" in content)
+
+    if ext == ".sql":
+        opt_prompt = _SQL_OPT_PROMPT
+    elif is_airflow_dag:
+        # Use the same comprehensive prompt as optimise_dag so GCS/Git DAGs get
+        # the full loading-rules + modernisation + structural analysis.
+        from tools.optimizer_tools import _build_dag_opt_prompt
+        sdk_info = config.get_composer_sdk_info(composer_env) if composer_env else config.get_default_sdk_info()
+        opt_prompt = _build_dag_opt_prompt(sdk_info)
+    else:
+        sdk_info = config.get_composer_sdk_info(composer_env) if composer_env else {}
+        opt_prompt = _PY_OPT_PROMPT
+        if sdk_info:
+            opt_prompt = (
+                opt_prompt
+                + f"\nAirflow: {sdk_info.get('airflow_version','')}, "
+                f"Python: {sdk_info.get('python_version','')}"
+            )
 
     llm = get_llm()
     response = llm.invoke([
@@ -353,6 +329,8 @@ def _optimise_single(
 
     import re as _re
     optimised = parsed.get("optimised_content", content)
+    doc_md: dict = {}
+
     if ext == ".sql":
         content_display = format_sql(content)
         # sqlglot strips /* */ block comments — preserve the header then reattach
@@ -365,10 +343,23 @@ def _optimise_single(
             optimised = format_sql(optimised)
     else:
         content_display = content
-        is_airflow_dag = "from airflow" in content or "import airflow" in content
         doc_md = parsed.get("doc_md") or {}
         if is_airflow_dag:
-            # Guarantee minimal doc_md fields
+            # Normalise: _DAG_OPT_STATIC returns "suggestions"; _PY_OPT_PROMPT returns "changes".
+            # Map suggestions → changes so the UI always gets a consistent field name.
+            if "suggestions" in parsed and "changes" not in parsed:
+                raw_suggestions = parsed["suggestions"]
+                parsed["changes"] = [
+                    {
+                        "change_type": s.get("category", s.get("change_type", "")),
+                        "original_snippet": s.get("current_code", s.get("original_snippet", "")),
+                        "optimised_snippet": s.get("suggested_code", s.get("optimised_snippet", "")),
+                        "reason": s.get("reason", ""),
+                        "estimated_impact": s.get("confidence", "Medium"),
+                        "confidence": s.get("confidence", "Medium"),
+                    }
+                    for s in raw_suggestions
+                ]
             if not doc_md.get("control_m_job"):
                 doc_md["control_m_job"] = Path(file_name).stem.upper().replace("-", "_")
             if not isinstance(doc_md.get("impacted_objects"), list):
@@ -384,7 +375,7 @@ def _optimise_single(
         "changes": parsed.get("changes", []),
         "overall_confidence_score": parsed.get("overall_confidence_score"),
         "overall_summary": parsed.get("overall_summary", ""),
-        "doc_md": doc_md if (ext == ".py") else {},
+        "doc_md": doc_md,
     }
 
 

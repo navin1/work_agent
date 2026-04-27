@@ -28,13 +28,69 @@ Also return: overall_confidence_score (0-100), overall_summary.
 Return JSON only. No markdown, no preamble."""
 
 
-_DAG_OPTIMISE_SYSTEM_PROMPT = """You are an Apache Airflow DAG optimisation expert and technical documentation writer.
-Airflow version: {airflow_version}, Python: {python_version}.
-ABSOLUTE CONSTRAINT: Do NOT suggest changes that alter functional behaviour, data outputs, business logic, or scheduling semantics.
-IMPORTS: Never rewrite or reorganise import statements. Only REMOVE complete import lines that are
-genuinely unused after rewriting. A used import (e.g. `from datetime import timedelta`) must stay
-exactly as-is — do NOT move names to a different module or change the import form in any way.
+# ── Shared DAG rewrite rules ──────────────────────────────────────────────────
+# Single source of truth used by both optimise_dag (Composer-based) and
+# optimise_file / optimise_folder (local/GCS/Git file-based).
 
+_DAG_REWRITE_RULES = """AIRFLOW DAG REWRITE RULES — apply ALL that are applicable:
+
+1. UNUSED IMPORTS — remove every import line not referenced in the final file.
+   Keep only what the rewritten code actually uses.
+
+2. CONTEXT MANAGER — convert the bare-assignment DAG to the context-manager pattern.
+   Indent ALL task definitions inside the `with` block. Remove `dag=dag` from every
+   operator — it is inferred from the context manager.
+   BEFORE:  dag = DAG('my_dag', ...)
+            task = SomeOperator(..., dag=dag)
+   AFTER:   with DAG('my_dag', ...) as dag:
+                task = SomeOperator(...)
+
+3. catchup=False — add to the DAG constructor if not present.
+
+4. EMPTY queryParameters — remove `"queryParameters": []` from every operator config.
+
+5. LOOP COLLAPSE — when multiple operator groups share the same type and config shape
+   and differ only by an entity name, collapse them into a single for-loop.
+   a. The entities list uses FULL task names (e.g. "eda_osr_rps_s_fee_item_snap"),
+      NOT short suffixes. Derive the full name from the existing task_id value.
+   b. Use direct local variables (bq_start, bq_main, bq_end) — NOT a dict or list.
+   c. Jinja {% include %} paths MUST use Python f-strings with escaped Jinja braces:
+        f"{% include 'bq_sql/{entity}_start.sql' %}"
+      → produces: {% include 'bq_sql/eda_osr_rps_s_fee_item_snap_start.sql' %}
+      NEVER use string concatenation like "{% include 'bq_sql/" + var + ".sql' %}".
+   d. Set the dependency chain INSIDE the loop on one line:
+        start_task >> bq_start >> bq_main >> bq_end >> end_task
+   e. NEVER change operator types — BashOperator stays BashOperator,
+      BigQueryInsertJobOperator stays BigQueryInsertJobOperator, etc.
+      Do NOT replace any operator with DummyOperator or EmptyOperator
+      unless the original code already uses DummyOperator/EmptyOperator.
+
+6. SECTION DELIMITER COMMENTS — remove comments that only restate the task name
+   (e.g. `##-----osr_rps_s_fee_item_snap_dag_start`). Keep substantive comments.
+
+7. DAG DOC_MD VARIABLE — wire dag_doc_md into Airflow (server injects the content):
+   a. Add the line  `dag_doc_md = ""`  immediately before the DAG constructor.
+      The server will replace it with the full Markdown string — do NOT write
+      any multiline string content yourself.
+   b. Pass it in the DAG constructor kwargs:  `doc_md=dag_doc_md,`
+   The variable name MUST be exactly `dag_doc_md` — do not rename it."""
+
+
+# Header uses <AIRFLOW_VERSION> / <PYTHON_VERSION> markers replaced via .replace()
+# so that _DAG_REWRITE_RULES (which contains bare { } characters) is never passed
+# through str.format() — avoiding KeyError on {entity} and similar patterns.
+
+_DAG_OPT_VERSIONED_HEADER = (
+    "You are an Apache Airflow DAG optimisation expert and technical documentation writer.\n"
+    "Airflow version: <AIRFLOW_VERSION>, Python: <PYTHON_VERSION>.\n"
+    "ABSOLUTE CONSTRAINT: Do NOT suggest changes that alter functional behaviour, data outputs, "
+    "business logic, or scheduling semantics.\n"
+    "IMPORTS: Never rewrite or reorganise import statements. Only REMOVE complete import lines that are\n"
+    "genuinely unused after rewriting. A used import (e.g. `from datetime import timedelta`) must stay\n"
+    "exactly as-is — do NOT move names to a different module or change the import form in any way.\n"
+)
+
+_DAG_OPT_STATIC = """
 ═══ DAG LOADING RULES — violations prevent Airflow from discovering the DAG ═══
 
 RULE 1 — dag=dag and context manager are an ATOMIC pair:
@@ -94,85 +150,41 @@ RULE 5 — no top-level side-effects:
   - Consolidate redundant branching operators.
 
 Your response MUST be a single JSON object — NOT a list, NOT wrapped in any other structure.
-No markdown. No preamble. No trailing text. Start the response with {{ and end with }}.
+No markdown. No preamble. No trailing text. Start the response with { and end with }.
 
-{{
-  "optimised_content": "<complete rewritten Python DAG file with ALL transformations from REWRITE RULES applied>",
+{
+  "optimised_content": "<complete rewritten Python DAG file with ALL transformations applied>",
   "suggestions": [
-    {{
+    {
       "description": "<what was changed>",
       "current_code": "<original code snippet>",
       "suggested_code": "<improved code snippet>",
       "reason": "<why this improves the DAG>",
       "category": "<dag_loading | modernisation | structural>",
       "confidence": "<High | Medium | Low>"
-    }}
+    }
   ],
-  "doc_md": {{
+  "doc_md": {
     "overview": "<3-4 crisp sentences: what this DAG does, what data it processes, what it loads/computes, and its business purpose. Infer from task names, operator types, and any SQL provided.>",
     "control_m_job": "<DAG id converted to UPPER_SNAKE_CASE, e.g. dag_rps800_load → DAG_RPS800_LOAD>",
     "impacted_objects": [
-      {{
+      {
         "name": "<schema.table_or_view as it literally appears in the SQL>",
         "description": "<one-line description of what this object holds>",
         "operation": "<read | write | read/write>",
         "type": "<table | view>"
-      }}
+      }
     ]
-  }}
-}}
+  }
+}
 
-REWRITE RULES for optimised_content — apply ALL that are applicable:
+""" + _DAG_REWRITE_RULES + """
 
-  1. UNUSED IMPORTS — remove every import not referenced in the final file.
-     Keep only what the rewritten code actually uses.
+8. MODERNISATION — apply applicable rules from the MODERNISATION section above without any
+   behaviour change.
 
-  2. CONTEXT MANAGER — convert the bare-assignment DAG to the context-manager pattern.
-     Indent ALL task definitions inside the `with` block. Remove `dag=dag` from every
-     operator — it is inferred from the context manager.
-     BEFORE:  dag = DAG('my_dag', ...)
-              task = SomeOperator(..., dag=dag)
-     AFTER:   with DAG('my_dag', ...) as dag:
-                  task = SomeOperator(...)
-
-  3. catchup=False — add to the DAG constructor if not present.
-
-  4. EMPTY queryParameters — remove `"queryParameters": []` from every operator config.
-
-  5. LOOP COLLAPSE — when multiple operator groups share the same type and config shape
-     and differ only by an entity name, collapse them into a single for-loop.
-     EXACT RULES:
-     a. The entities list uses FULL task names (e.g. "eda_osr_rps_s_fee_item_snap"),
-        NOT short suffixes. Derive the full name from the existing task_id value.
-     b. Use direct local variables (bq_start, bq_main, bq_end) — NOT a dict or list.
-     c. Jinja {% include %} paths MUST use Python f-strings with escaped Jinja braces:
-          f"{{% include 'bq_sql/{entity}_start.sql' %}}"
-        → produces: {% include 'bq_sql/eda_osr_rps_s_fee_item_snap_start.sql' %}
-        NEVER use string concatenation like "{% include 'bq_sql/" + var + ".sql' %}".
-     d. Set the dependency chain INSIDE the loop on one line:
-          start_task >> bq_start >> bq_main >> bq_end >> end_task
-     e. NEVER change operator types — BashOperator stays BashOperator,
-        BigQueryInsertJobOperator stays BigQueryInsertJobOperator, etc.
-        Do NOT replace any operator with DummyOperator or EmptyOperator
-        unless the original code already uses DummyOperator/EmptyOperator.
-
-  6. CLEAN COMMENTS — remove section-delimiter comments that only restate the task name
-     (e.g. `##-----osr_rps_s_fee_item_snap_dag_start`). Keep substantive comments.
-
-  7. MODERNISATION — apply applicable rules from the section above without any
-     behaviour change.
-
-  8. HARD CONSTRAINTS — task IDs, SQL file include paths, params dict, label values,
-     bash_command strings, and the full dependency graph must be identical to the original.
-
-  9. DAG DOC_MD VARIABLE — wire dag_doc_md into Airflow (server injects the content):
-     a. Add the line  `dag_doc_md = ""`  immediately before the DAG constructor.
-        The server will replace it with the full Markdown string — do NOT write
-        any multiline string content yourself.
-     b. Pass it in the DAG constructor kwargs:  `doc_md = dag_doc_md,`
-     c. Set it on the dag object as the FIRST statement inside `with DAG(...) as dag:`:
-          `dag.doc_md = dag_doc_md`
-     The variable name MUST be exactly `dag_doc_md` — do not rename it.
+9. HARD CONSTRAINTS — task IDs, SQL file include paths, params dict, label values,
+   bash_command strings, and the full dependency graph must be identical to the original.
 
 Rules for impacted_objects (read from the RENDERED SQL blocks if provided):
   • FROM clause / JOIN → operation "read"
@@ -182,6 +194,15 @@ Rules for impacted_objects (read from the RENDERED SQL blocks if provided):
   • Names ending in _view / _vw / _v, or used only as SELECT sources → type "view"; otherwise "table".
   • If no rendered SQL is provided, infer table names from operator params and file path hints in the DAG.
   • doc_md is MANDATORY — always populate overview and control_m_job even if SQL is unavailable."""
+
+
+def _build_dag_opt_prompt(sdk_info: dict) -> str:
+    """Build the DAG optimisation system prompt, substituting Airflow/Python version."""
+    return (
+        _DAG_OPT_VERSIONED_HEADER
+        .replace("<AIRFLOW_VERSION>", sdk_info.get("airflow_version", "unknown"))
+        .replace("<PYTHON_VERSION>", sdk_info.get("python_version", "3.x"))
+    ) + _DAG_OPT_STATIC
 
 
 def _call_llm(system: str, user_content: str) -> str:
@@ -301,21 +322,17 @@ def _build_dag_docmd_variable(dag_id: str, doc_md: dict) -> str:
     objects    = doc_md.get("impacted_objects", [])
     conf_base  = (_cfg.CONFLUENCE_BASE_URL or "").rstrip("/")
 
-    md = [f"# {job}", ""]
+    md = [f"### {job}", ""]
 
     if overview:
-        md += ["---", "", "## Overview", "", overview, "", "---", ""]
+        md += ["---", "", "#### Overview", "", overview, "", "---", ""]
 
     # Control-M table
     job_cell = f"[{job}]({conf_base}/{job})" if conf_base else f"`{job}`"
     md += [
-        "## Control-M job",
+        "#### Control-M job",
         "",
-        "| Field           | Value |",
-        "|-----------------|-------|",
-        f"| Job name       | {job_cell} |",
-        f"| Folder         | `{folder}` |",
-        f"| Server         | `{server}` |",
+        f"**`Job Name`**: {job_cell}",
         "",
         "---",
         "",
@@ -345,7 +362,7 @@ def _build_dag_docmd_variable(dag_id: str, doc_md: dict) -> str:
 
         sep = "|-" + "-|-".join("-" * w for w in col_w) + "-|"
 
-        md += ["## Impacted tables & views", "", _row(headers), sep]
+        md += ["#### Impacted tables & views", "", _row(headers), sep]
         md += [_row(r) for r in rows]
         md += ["", "---", ""]
 
@@ -358,8 +375,7 @@ def _inject_dag_docmd(source: str, dag_id: str, doc_md: dict) -> str:
 
     - If dag_doc_md already exists  → replace its content with the canonical version.
     - Otherwise                     → insert it before `with DAG(` / `dag = DAG(`.
-    The LLM is responsible for wiring doc_md=dag_doc_md into the constructor and
-    setting dag.doc_md = dag_doc_md; this function only manages the variable itself.
+    The LLM is responsible for wiring doc_md=dag_doc_md into the constructor; this function only manages the variable itself.
     """
     import re as _re
     block = _build_dag_docmd_variable(dag_id, doc_md)
@@ -390,8 +406,31 @@ def _inject_dag_docmd(source: str, dag_id: str, doc_md: dict) -> str:
     return section + block + "\n\n\n" + source
 
 
+def _resolve_dag_source_from_path(file_path: str) -> str | None:
+    """Fetch DAG source from an explicit path (GCS gs://, Git relative, or local absolute)."""
+    if file_path.startswith("gs://"):
+        try:
+            from google.cloud import storage
+            from core.auth import get_credentials
+            creds, _ = get_credentials()
+            client = storage.Client(credentials=creds)
+            parts = file_path[5:].split("/", 1)
+            bucket_name, blob_name = parts[0], parts[1] if len(parts) > 1 else ""
+            return client.bucket(bucket_name).blob(blob_name).download_as_text()
+        except Exception:
+            return None
+
+    local = Path(file_path)
+    if local.is_absolute() or file_path.startswith("./") or file_path.startswith("../"):
+        return local.read_text(encoding="utf-8") if local.exists() else None
+    if local.exists():
+        return local.read_text(encoding="utf-8")
+
+    return _fetch_file_from_git(file_path)
+
+
 @tool
-def optimise_dag(composer_env: str, dag_id: str) -> str:
+def optimise_dag(composer_env: str, dag_id: str, file_path: str = None) -> str:
     """Optimisation suggestions for a DAG in three categories: dag_loading, modernisation, structural.
     dag_loading: catchup=False, atomic dag=dag+context-manager conversion, module-level DAG,
       fixed start_date, no top-level side-effects — fixes that prevent Airflow from loading the DAG.
@@ -399,11 +438,19 @@ def optimise_dag(composer_env: str, dag_id: str) -> str:
       execution_date→logical_date, DummyOperator→EmptyOperator, set_upstream→>>, TaskFlow @task.
     Structural: task parallelism, dependency graph, trigger rules, sensor timeouts, pool usage.
     Tailored to the Airflow version from env vars. HARD CONSTRAINT: no functional changes.
+    file_path: optional explicit source path (local, gs://bucket/path/dag.py, or Git path).
+      When provided, overrides automatic source discovery via Airflow API / GCS / Git.
+      dag_id is still used for Airflow API SQL-context calls and the export filename.
     Returns JSON with suggestions [{description, current_code, suggested_code, reason, category, confidence}]
     and doc_md {overview, control_m_job, impacted_objects}."""
     start = time.time()
     try:
-        source = _fetch_dag_source(dag_id, composer_env) or ""
+        if file_path:
+            source = _resolve_dag_source_from_path(file_path) or ""
+            if not source:
+                return json.dumps({"error": f"Could not read DAG source from: {file_path}"})
+        else:
+            source = _fetch_dag_source(dag_id, composer_env) or ""
         if not source:
             return json.dumps(_dag_source_not_found_error(dag_id, composer_env))
 
@@ -459,7 +506,7 @@ def optimise_dag(composer_env: str, dag_id: str) -> str:
             pass
 
         sdk_info = config.get_composer_sdk_info(composer_env)
-        system = _DAG_OPTIMISE_SYSTEM_PROMPT.format(**sdk_info)
+        system = _build_dag_opt_prompt(sdk_info)
         user_content = f"Optimise this DAG (id: {dag_id}):\n\n{source}"
         if sql_context:
             user_content += (

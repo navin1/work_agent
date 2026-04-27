@@ -11,6 +11,11 @@ from tools import ALL_TOOLS
 from agent.system_prompt import build_system_prompt
 from agent.preprocessor import preprocess_prompt
 
+
+def _dynamic_prompt(state):
+    """Rebuild the system prompt on every invocation so LOADED EXCEL TABLES is always current."""
+    return [SystemMessage(content=build_system_prompt())] + state["messages"]
+
 _THREAD_ID = "default"
 
 _CONVERSATIONAL = re.compile(
@@ -29,7 +34,7 @@ def build_agent():
     return create_react_agent(
         model=llm,
         tools=ALL_TOOLS,
-        prompt=build_system_prompt(),
+        prompt=_dynamic_prompt,
         checkpointer=MemorySaver(),
     )
 

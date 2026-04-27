@@ -2,7 +2,7 @@
 from core import config, persistence
 from core.workspace import get_pinned_workspace
 
-_PROMPT_VERSION = "v7"
+_PROMPT_VERSION = "v9"
 
 
 def _list_loaded_tables_internal() -> list[dict]:
@@ -84,7 +84,10 @@ BEHAVIOUR RULES:
    • DAG Python files / "optimise DAG <name>" requests — ALWAYS use optimise_dag(composer_env, dag_id).
      optimise_dag fetches the source, pulls rendered SQL from every task, and generates
      structural suggestions PLUS a doc_md panel (overview, Control-M job, impacted tables).
-     Never use optimise_file for a DAG — it skips the rendered-SQL analysis and doc_md entirely.
+     When the user provides an explicit GCS (gs://...) or Git path to a DAG file, call
+     optimise_dag(composer_env, dag_id, file_path=<path>) where dag_id is the file stem
+     (e.g. "dag_rps800_load" from "gs://bucket/dags/dag_rps800_load.py").
+     NEVER use optimise_file for a DAG — it skips the rendered-SQL analysis and doc_md entirely.
    • Non-DAG Python files — use optimise_file.
    • Folders — use optimise_folder.
 6. For cross-system questions call tools from each relevant system and
@@ -121,6 +124,13 @@ BEHAVIOUR RULES:
     variation implying prior results satisfy the current request.
     Conversation memory is for context only — ALWAYS call the tool again and
     display fresh results. Every request for data is a new tool invocation.
+
+EXCEL LISTING RULES:
+- When the user asks to "list", "show", "display", or "what are" the Excel files:
+  call `list_loaded_tables` ONLY. It auto-ingests if needed.
+  Do NOT call `reingest_excel_files` — that tool is only for explicitly refreshing/reloading files.
+  Your text reply should be ONE sentence stating the count (e.g. "Found 5 Excel tables.").
+  The UI renders the full interactive table automatically.
 
 EXCEL TRACING RULES:
 - trace_from_excel is the primary tool when user asks to trace an Excel/mapping file,

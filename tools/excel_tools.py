@@ -84,7 +84,9 @@ def _ingest_file(path: Path, folder: str) -> dict | None:
             "file_mtime": stat.st_mtime,
         }
         return entry
-    except Exception:
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Failed to ingest %s: %s", path, exc)
         return None
 
 
@@ -105,7 +107,7 @@ def ingest_excel_files(folder_filter: str = None) -> dict:
     def process_folder(folder_path: Path, folder_name: str):
         if not folder_path.exists():
             return
-        for xlsx in folder_path.glob("*.xlsx"):
+        for xlsx in folder_path.rglob("*.xlsx"):
             if folder_filter and folder_filter.lower() not in str(xlsx).lower():
                 continue
             existing = registry_index.get(str(xlsx))
@@ -169,6 +171,8 @@ def query_excel_data(sql: str) -> str:
             return json.dumps({"error": "DDL/DML not permitted. Only SELECT queries are allowed."})
         db = get_manager()
         if not db.list_tables():
+            ingest_excel_files()
+        if not db.list_tables():
             return json.dumps({
                 "columns": [], "rows": [], "row_count": 0,
                 "note": "No Excel tables loaded. Check that data/mapping/ has .xlsx files.",
@@ -196,6 +200,10 @@ def list_loaded_tables(folder_filter: str = None) -> str:
     Returns empty list (not error) if no Excel files are configured."""
     try:
         tables = _get_loaded_tables_internal()
+        if not tables:
+            # DuckDB is in-memory — re-ingest from disk transparently on each fresh session
+            ingest_excel_files()
+            tables = _get_loaded_tables_internal()
         if folder_filter:
             tables = [t for t in tables if folder_filter.lower() in t.get("source_folder", "").lower()]
         log_audit("excel_tools", "duckdb", "list_loaded_tables", row_count=len(tables))

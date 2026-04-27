@@ -69,7 +69,26 @@ Ask questions in plain English. The agent plans, calls the right tools, and retu
 
 **Guarantee:** Optimisation NEVER changes functional output, business logic, column names, or return values — performance and best practices only.
 
+**DAG optimisation** (`optimise_dag`) additionally generates a `dag_doc_md` Markdown block that wires into the Airflow UI **Details** tab and **Graph** view header. It includes:
+- Overview of the DAG's purpose
+- Control-M job / folder / server references
+- Impacted BigQuery tables and views
+
 **Output:** Single file → saved to `exports/` with a **Download** button. Folder → zip archive with **Download All** button.
+
+---
+
+### File Browser
+
+| Example | What it does |
+|---|---|
+| `List files in gs://my-bucket/sql/rps800/` | Shows a clickable file table for a GCS prefix |
+| `Browse the dags/ folder in Git` | Lists files and sub-folders in the configured Git repo |
+| `What files are in gs://my-bucket/dags/` | Same as browse — lists files at the given GCS location |
+
+**Click any file name** in the browser table to load its contents into a Monaco editor with syntax highlighting. Supports CSV (shown as a data table), SQL, Python, YAML, JSON, Markdown, and more.
+
+**Note:** To view a *specific* file (with a known path and extension), say `show` or `read` rather than `list` — the agent will fetch it directly without listing the folder first.
 
 ---
 
@@ -154,3 +173,62 @@ Ask questions in plain English. The agent plans, calls the right tools, and retu
 - Ask follow-up questions — the agent remembers the last 20 exchanges
 - Every answer cites which tool produced which part
 - Suggested prompts appear when the chat is empty
+
+---
+
+## Architecture Overview *(developer reference)*
+
+```
+app.py                    ← Streamlit entrypoint, session state, chat loop,
+                            renderer dispatcher (dispatch_renderers)
+agent/
+  agent.py                ← LangGraph ReAct agent builder + run_agent()
+  system_prompt.py        ← Dynamic prompt (workspace, glossary, loaded tables)
+  preprocessor.py         ← Glossary expansion before prompt hits the LLM
+tools/
+  __init__.py             ← ALL_TOOLS registry (manual — must be kept in sync)
+  bigquery_tools.py       ← BQ query, dataset/table list, job stats
+  browse_tools.py         ← browse_gcs, browse_git, fetch helpers
+  code_tools.py           ← read_file, compare_git_gcs, optimise_file/folder
+  composer_tools.py       ← 12 Airflow tools: DAGs, runs, tasks, SQL, logs
+  excel_tools.py          ← DuckDB ingest, query, registry, lineage trace
+  optimizer_tools.py      ← SQL flags, optimise_sql, optimise_dag, optimise_all
+  reconciliation_tools.py ← Three-way Git/GCS/mapping reconciliation
+  schema_tools.py         ← BQ schema introspection, MySQL→BQ schema audit
+  testing_tools.py        ← compare_query_outputs, validate_optimisation
+  user_tools.py           ← Saved queries, glossary, workspace pin, favorites
+core/
+  config.py               ← All env vars and constants
+  auth.py                 ← GCP credential provider
+  persistence.py          ← JSON-backed registry, glossary, saved queries
+  duckdb_manager.py       ← Singleton DuckDB connection
+  workspace.py            ← Pinned workspace read/write
+  audit.py                ← Structured audit log per tool call
+  llm.py                  ← LLM client factory
+  monaco.py               ← Monaco editor HTML builder
+  sql_formatter.py        ← SQL pretty-printer
+  json_utils.py           ← safe_json serialiser
+renderers/
+  results_table.py        ← DAG list, task SQL, BQ/Excel query results
+  optimised_file_viewer.py← Diff viewer, DAG doc_md panel, file content, folder
+  lineage_graph.py        ← Streamlit-flow lineage graph
+  file_browser.py         ← GCS/Git file browser with click-to-view
+  diff_viewer.py          ← Inline SQL before/after diff
+  reconciliation_panel.py ← Reconciliation findings UI
+  schema_audit_panel.py   ← Schema audit colour-coded results
+  schema_tree.py          ← BQ schema tree viewer
+  performance_matrix.py   ← Task performance heat-map
+  run_history_chart.py    ← DAG run history chart
+  validation_panel.py     ← Optimisation validation verdict
+```
+
+### Known architectural debt (address as scope grows)
+
+| Issue | Impact | Fix |
+|---|---|---|
+| `dispatch_renderers` is a 30-branch `if`-chain in `app.py` | Every new tool adds 3 lines; order encodes implicit priority | Convert to `RENDERER_MAP = {"tool_name": fn}` dict |
+| `tools/__init__.py` is manually maintained | New tool requires 2 edits; easy to drift | `@register_tool` decorator or auto-discovery |
+| `composer_tools.py` at 1 177 lines, 12 tools | Hard to navigate, slow to load | Split: `composer_dags.py` / `composer_jobs.py` / `composer_logs.py` |
+| `app.py` mixes CSS, session state, sidebar, chat, dispatch | Growing file, hard to test | Split: `ui/sidebar.py` · `ui/chat.py` · `ui/dispatcher.py` |
+| System prompt is one 231-line string | Domain rules buried; hard to update one area | Compose from `_bq_rules()`, `_composer_rules()`, `_optimisation_rules()` |
+| No automated tests | Regressions silently break tool output shapes | Add `tests/` with unit tests for tool output parsers and renderers |
