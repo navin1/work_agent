@@ -80,7 +80,7 @@ def fetch_gcs_file(bucket_name: str, blob_path: str) -> str:
     from core.auth import get_credentials
     creds, _ = get_credentials()
     client = storage.Client(credentials=creds)
-    return client.bucket(bucket_name).blob(blob_path).download_as_text()
+    return client.bucket(bucket_name).blob(blob_path).download_as_text(encoding="utf-8")
 
 
 # ── Git ───────────────────────────────────────────────────────────────────────

@@ -123,10 +123,10 @@ def _fetch_file(file_path: str) -> tuple[str | None, str]:
             client = storage.Client(credentials=creds)
             parts = file_path[5:].split("/", 1)
             bucket_name, blob_name = parts[0], parts[1] if len(parts) > 1 else ""
-            content = client.bucket(bucket_name).blob(blob_name).download_as_text()
+            content = client.bucket(bucket_name).blob(blob_name).download_as_text(encoding="utf-8")
             return content, file_path
         except Exception as e:
-            return None, f"GCS fetch failed: {e}"
+            return None, f"GCS error: {e}"
 
     # Local path: absolute, ./-relative, or existing file
     local = Path(file_path)
@@ -404,7 +404,7 @@ def read_file(file_path: str) -> str:
     try:
         content, resolved_path = _fetch_file(file_path)
         if content is None:
-            return safe_json({"error": f"File not found: {file_path}"})
+            return safe_json({"error": resolved_path or f"File not found: {file_path}"})
         ext = Path(resolved_path).suffix.lstrip(".")
         return safe_json({
             "file_path": resolved_path,

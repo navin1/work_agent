@@ -1,12 +1,11 @@
 """File browser renderer — GCS and Git.
 
-Shows a clickable file listing table. Selecting a row fetches and displays
+Shows a clickable file listing. Clicking a file name fetches and displays
 the file content in a Monaco editor (language auto-detected from extension).
 """
 import json
 import io
 
-import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -98,62 +97,65 @@ def render_file_browser(raw_json: str) -> None:
         for d in dirs:
             st.markdown(f"📁 `{d['name']}`")
 
-    # ── File table with row selection ─────────────────────────────────────────
     if not files:
         st.info("No files at this level (only sub-folders).")
         return
 
-    st.caption(f"📄 {len(files)} file(s) — click a row to view contents")
+    # ── Keys for session-state-based selection ────────────────────────────────
+    # Include a hash of display_path so multiple browser instances don't collide.
+    _key_tag = f"{source}_{abs(hash(display_path))}"
+    sel_key  = f"fb_selected_{_key_tag}"
 
-    rows = [
-        {
-            "File":      f["name"],
-            "Size":      _fmt_size(f.get("size")),
-            "Modified":  _fmt_date(f.get("updated") or f.get("sha", "")[:7] or None),
-        }
-        for f in files
-    ]
-    df = pd.DataFrame(rows)
+    # ── File list header ──────────────────────────────────────────────────────
+    st.caption(f"📄 {len(files)} file(s) — click a file name to view its contents")
 
-    browser_key = f"fb_sel_{source}_{display_path}"
+    h1, h2, h3 = st.columns([5, 1, 2])
+    h1.markdown("**File**")
+    h2.markdown("**Size**")
+    h3.markdown("**Modified**")
 
-    sel = st.dataframe(
-        df,
-        hide_index=True,
-        use_container_width=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        key=browser_key,
-    )
+    # ── File rows — each name is a button ─────────────────────────────────────
+    for f in files:
+        c1, c2, c3 = st.columns([5, 1, 2])
+        with c1:
+            btn_key = f"fb_btn_{_key_tag}_{f['path']}"
+            if st.button(f"📄 {f['name']}", key=btn_key, use_container_width=True):
+                st.session_state[sel_key] = f
+                # Clear any cached content so a fresh fetch always runs
+                content_key = f"fb_content_{_key_tag}_{f['path']}"
+                st.session_state.pop(content_key, None)
+        with c2:
+            st.caption(_fmt_size(f.get("size")))
+        with c3:
+            st.caption(_fmt_date(f.get("updated") or f.get("sha", "")[:7] or None))
 
-    selected_rows = sel.selection.rows if hasattr(sel, "selection") else []
-    if not selected_rows:
-        st.caption("No file selected — click a row to view its contents.")
+    # ── Content viewer ────────────────────────────────────────────────────────
+    selected_item = st.session_state.get(sel_key)
+    if not selected_item:
         return
 
-    selected_item = files[selected_rows[0]]
-    file_name     = selected_item["name"]
-    cache_key     = f"fb_content_{source}_{selected_item['path']}"
+    file_name   = selected_item["name"]
+    content_key = f"fb_content_{_key_tag}_{selected_item['path']}"
 
     st.divider()
     st.markdown(f"#### 📄 `{file_name}`")
 
-    if cache_key not in st.session_state:
+    if content_key not in st.session_state:
         with st.spinner(f"Loading {file_name}…"):
             try:
-                st.session_state[cache_key] = _fetch_content(source, selected_item, bucket)
+                st.session_state[content_key] = _fetch_content(source, selected_item, bucket)
             except Exception as exc:
-                st.session_state[cache_key] = f"# Error loading file: {exc}"
+                st.session_state[content_key] = f"__ERROR__: {exc}"
 
-    content = st.session_state[cache_key]
+    content = st.session_state[content_key]
 
-    if content.startswith("# Error"):
-        st.error(content)
+    if content.startswith("__ERROR__:"):
+        st.error(content[len("__ERROR__:"):].strip())
         return
 
-    # CSV → dataframe; everything else → Monaco editor
     if file_name.endswith(".csv"):
         try:
+            import pandas as pd
             df_csv = pd.read_csv(io.StringIO(content))
             st.caption(f"{len(df_csv):,} rows × {len(df_csv.columns)} columns")
             st.dataframe(df_csv, hide_index=True, use_container_width=True)
@@ -166,15 +168,15 @@ def render_file_browser(raw_json: str) -> None:
         components.html(monaco.editor(content, language=lang, height=height), height=height + 20)
 
     _safe_key = selected_item["path"].replace("/", "_")
-    col_dl, col_opt, _ = st.columns([1, 1, 5])
 
+    col_dl, col_opt, _ = st.columns([1, 1, 5])
     with col_dl:
         st.download_button(
             "⬇ Download",
             data=content.encode("utf-8"),
             file_name=file_name,
             mime="text/plain",
-            key=f"dl_fb_{source}_{_safe_key}",
+            key=f"dl_fb_{_key_tag}_{_safe_key}",
         )
 
     with col_opt:
@@ -184,12 +186,11 @@ def render_file_browser(raw_json: str) -> None:
                 _file_ref = selected_item.get("gcs_path") or f"gs://{bucket}/{selected_item['path']}"
             else:
                 _file_ref = selected_item["path"]
-
-            if _ext == "sql":
-                _prompt = f"Optimise the SQL file at {_file_ref}"
-            else:
-                _prompt = f"Optimise the file {_file_ref}"
-
-            if st.button("⚡ Optimise", key=f"opt_fb_{source}_{_safe_key}"):
+            _prompt = (
+                f"Optimise the SQL file at {_file_ref}"
+                if _ext == "sql"
+                else f"Optimise the file {_file_ref}"
+            )
+            if st.button("⚡ Optimise", key=f"opt_fb_{_key_tag}_{_safe_key}"):
                 st.session_state.chat_prefill = _prompt
                 st.rerun()

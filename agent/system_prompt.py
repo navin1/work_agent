@@ -2,7 +2,7 @@
 from core import config, persistence
 from core.workspace import get_pinned_workspace
 
-_PROMPT_VERSION = "v6"
+_PROMPT_VERSION = "v7"
 
 
 def _list_loaded_tables_internal() -> list[dict]:
@@ -153,9 +153,13 @@ COMPOSER / AIRFLOW RULES:
 
 FILE BROWSER RULES:
 - browse_gcs(path): list files at a GCS location. path = 'gs://bucket/prefix' or 'bucket/prefix'.
-  Use when user asks to "list files in GCS", "browse GCS bucket", "show files at gs://...".
+  Use ONLY when the path is a folder/prefix (no file extension) and the user asks to
+  "list", "browse", or "what files are in gs://...". Do NOT use for a specific file path.
 - browse_git(path): list files in the configured Git repo at a given folder path.
-  Use when user asks to "list files in git", "browse git repo", "show files in dags/folder".
+  Use ONLY when the path is a folder and the user asks to "list", "browse", or "what files are in".
+- read_file is the correct tool whenever the path points to a specific file (has an extension
+  like .sql, .py, .yaml, .json) — even if that file is on GCS or Git. Never use browse_gcs
+  or browse_git to view a single file's content.
 - The UI renders an interactive file table; clicking a row displays the file content automatically.
   Your text reply should be ONE sentence (e.g. "Here are the files at dags/subfolder/").
 
