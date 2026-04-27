@@ -311,30 +311,42 @@ def _build_dag_docmd_variable(dag_id: str, doc_md: dict) -> str:
     md += [
         "## Control-M job",
         "",
-        "| Field      | Value |",
-        "|------------|-------|",
-        f"| Job name   | {job_cell} |",
-        f"| Folder     | `{folder}` |",
-        f"| Server     | `{server}` |",
+        "| Field           | Value |",
+        "|-----------------|-------|",
+        f"| Job name       | {job_cell} |",
+        f"| Folder         | `{folder}` |",
+        f"| Server         | `{server}` |",
         "",
         "---",
         "",
     ]
 
-    # Impacted tables & views table
+    # Impacted tables & views table — columns sized to the widest cell in each column
     if objects:
-        md += [
-            "## Impacted tables & views",
-            "",
-            "| Object | Type | Operation | Description |",
-            "|--------|------|-----------|-------------|",
-        ]
+        rows = []
         for obj in objects[:10]:
             name = obj.get("name", "")
-            typ  = obj.get("type", "table").title()
-            op   = obj.get("operation", "read").title()
-            desc = obj.get("description", "")
-            md.append(f"| `{name}` | {typ} | {op} | {desc} |")
+            rows.append((
+                f"`{name}`",
+                obj.get("type", "table").title(),
+                obj.get("operation", "read").title(),
+                obj.get("description", ""),
+            ))
+
+        headers = ("Object", "Type", "Operation", "Description")
+        # +4 so the widest cell always has at least 5 chars of trailing space before |
+        col_w = [
+            max(len(headers[i]), max((len(r[i]) for r in rows), default=0)) + 4
+            for i in range(4)
+        ]
+
+        def _row(cells):
+            return "| " + " | ".join(c.ljust(col_w[i]) for i, c in enumerate(cells)) + " |"
+
+        sep = "|-" + "-|-".join("-" * w for w in col_w) + "-|"
+
+        md += ["## Impacted tables & views", "", _row(headers), sep]
+        md += [_row(r) for r in rows]
         md += ["", "---", ""]
 
     md_body = "\n".join(md)
