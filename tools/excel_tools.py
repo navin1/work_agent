@@ -12,6 +12,14 @@ from core.duckdb_manager import get_manager
 from core.sql_formatter import extract_sql
 
 
+def _dag_meta_for_path(file_path: str) -> dict:
+    """Return {bq_table, dag_names} for a file stem by reading dag_mapping.json directly.
+    Always reads the live JSON, never trusts stale registry values."""
+    stem = Path(file_path).stem
+    dag_map = persistence.get_dag_mapping()
+    return dag_map.get(stem) or dag_map.get(stem.lower()) or {}
+
+
 def _safe_table_name(folder: str, stem: str) -> str:
     import re
     name = f"{folder}_{stem}".lower()
@@ -172,6 +180,11 @@ def ingest_excel_files(folder_filter: str = None) -> dict:
             existing = registry_index.get(str(xlsx))
             if existing and existing.get("file_mtime") == xlsx.stat().st_mtime:
                 _ingest_file(xlsx, folder_name)
+                meta = _dag_meta_for_path(str(xlsx))
+                if meta:
+                    existing["bq_table"] = meta.get("bq_table", existing.get("bq_table", ""))
+                    existing["dag_names"] = meta.get("dag_names", existing.get("dag_names", []))
+                    registry_index[str(xlsx)] = existing
                 skipped.append(xlsx.name)
                 continue
             entry = _ingest_file(xlsx, folder_name)
@@ -288,7 +301,9 @@ def get_bq_table_for_mapping_file(mapping_file_name: str) -> str:
         for entry in registry:
             if name_lower in entry.get("file_path", "").lower() or name_lower in entry.get("table_name", "").lower():
                 log_audit("excel_tools", "registry", f"bq_table_for:{mapping_file_name}")
-                return json.dumps({"bq_table": entry.get("bq_table", "not found")})
+                meta = _dag_meta_for_path(entry.get("file_path", ""))
+                bq_table = meta.get("bq_table") or entry.get("bq_table") or "not found"
+                return json.dumps({"bq_table": bq_table})
         return json.dumps({"bq_table": "not found"})
     except Exception as exc:
         return json.dumps({"error": str(exc)})
@@ -306,7 +321,9 @@ def get_dags_for_mapping_file(mapping_file_name: str) -> str:
         for entry in registry:
             if name_lower in entry.get("file_path", "").lower() or name_lower in entry.get("table_name", "").lower():
                 log_audit("excel_tools", "registry", f"dags_for:{mapping_file_name}")
-                return json.dumps(entry.get("dag_names", []))
+                meta = _dag_meta_for_path(entry.get("file_path", ""))
+                dag_names = meta.get("dag_names") or entry.get("dag_names", [])
+                return json.dumps(dag_names)
         return json.dumps([])
     except Exception as exc:
         return json.dumps({"error": str(exc)})
@@ -363,8 +380,9 @@ def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
                 "available": [e.get("table_name") for e in registry],
             })
 
-        bq_table = entry.get("bq_table", "")
-        dag_names = entry.get("dag_names", [])
+        meta = _dag_meta_for_path(entry.get("file_path", ""))
+        bq_table = meta.get("bq_table") or entry.get("bq_table", "")
+        dag_names = meta.get("dag_names") or entry.get("dag_names", [])
 
         result = {
             "excel_file": Path(entry.get("file_path", "")).name,
