@@ -296,7 +296,7 @@ def _get_tool_names(agent_output: dict) -> set:
 def _clean_output(output: str, tool_names: set) -> str:
     """Normalise agent text: remove non-breaking spaces; strip markdown table rows
     when data tools are rendering the table themselves."""
-    output = output.replace(chr(0xa0), " ").replace("\\u00a0", " ").replace("\\xa0", " ")
+    output = output.replace(chr(0xa0), " ")
     if not (_DATA_TOOLS & tool_names):
         return output
     return "\n".join(l for l in output.split("\n") if not l.strip().startswith("|")).strip()
@@ -312,7 +312,7 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
             tool_name = step[0].tool
             tool_output = step[1]
             if isinstance(tool_output, str):
-                tool_output = tool_output.replace("\xa0", " ").replace("\\u00a0", " ").replace("\\xa0", " ")
+                tool_output = tool_output.replace(chr(0xa0), " ")
             tools_called[tool_name] = tool_output
         except Exception:
             continue

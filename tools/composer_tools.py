@@ -566,11 +566,12 @@ def get_dag_rendered_files(composer_env: str, dag_id: str) -> str:
                     continue
 
             if raw_sql or rendered_sql:
+                    best_sql = _best_sql(raw_sql, rendered_sql, rendered_truncated)
                 tasks_sql.append({
                     "task_id": task_id,
                     "operator": operator,
-                    "raw_sql": format_sql(raw_sql) if raw_sql else None,
-                    "rendered_sql": format_sql(_best_sql(raw_sql, rendered_sql, rendered_truncated)),
+                        "raw_sql": format_sql(raw_sql).replace("\xa0", " ") if raw_sql else None,
+                        "rendered_sql": format_sql(best_sql).replace("\xa0", " ") if best_sql else "",
                 })
 
         log_audit("composer_tools", composer_env, f"dag_rendered_files:{dag_id}",
@@ -702,11 +703,12 @@ def get_task_sql(composer_env: str, dag_id: str, task_id: str, rendered: bool = 
                 rendered_error = str(e)
                 debug["rendered_error"] = rendered_error
 
+        best_sql = _best_sql(raw_sql, rendered_sql, rendered_truncated)
         result = {
             "dag_id": dag_id,
             "task_id": task_id,
-            "raw_sql": format_sql(raw_sql) if raw_sql else None,
-            "rendered_sql": format_sql(_best_sql(raw_sql, rendered_sql, rendered_truncated)),
+            "raw_sql": format_sql(raw_sql).replace("\xa0", " ") if raw_sql else None,
+            "rendered_sql": format_sql(best_sql).replace("\xa0", " ") if best_sql else "",
             "_debug": debug,
         }
         if rendered_error and not result["rendered_sql"]:

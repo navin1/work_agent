@@ -196,7 +196,7 @@ def _fetch_task_sql(composer_env: str, dag_id: str, task_id: str, run_id: str) -
             pass
 
     best = _best_sql(raw_sql, rendered_sql)
-    return format_sql(best) if best else ""
+    return format_sql(best).replace("\xa0", " ") if best else ""
 
 
 def _render_task_content_panel(info: dict) -> None:
