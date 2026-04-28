@@ -332,15 +332,15 @@ def _optimise_single(
     doc_md: dict = {}
 
     if ext == ".sql":
-        content_display = format_sql(content)
+        content_display = format_sql(content).replace("\xa0", " ")
         # sqlglot strips /* */ block comments — preserve the header then reattach
         _hdr_match = _re.match(r"^(\s*/\*.*?\*/\s*)", optimised, _re.DOTALL)
         if _hdr_match:
             _header = _hdr_match.group(1).rstrip()
             _body   = optimised[_hdr_match.end():]
-            optimised = _header + "\n\n" + format_sql(_body)
+            optimised = _header + "\n\n" + format_sql(_body).replace("\xa0", " ")
         else:
-            optimised = format_sql(optimised)
+            optimised = format_sql(optimised).replace("\xa0", " ")
     else:
         content_display = content
         doc_md = parsed.get("doc_md") or {}

@@ -238,7 +238,7 @@ def query_excel_data(sql: str) -> str:
             "columns": list(df.columns),
             "rows": df.values.tolist(),
             "row_count": len(df),
-            "formatted_sql": format_sql(sql),
+            "formatted_sql": format_sql(sql).replace("\xa0", " "),
         }
         log_audit("excel_tools", "duckdb", sql, row_count=len(df), duration_ms=duration)
         return safe_json(result)
@@ -533,7 +533,7 @@ def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
                     if best:
                         dag_info["rendered_sqls"].append({
                             "task_id": tid,
-                            "rendered_sql": format_sql(best),
+                            "rendered_sql": format_sql(best).replace("\xa0", " "),
                         })
 
             except Exception as e:
