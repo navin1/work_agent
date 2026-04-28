@@ -3,7 +3,14 @@
 _CDN = "https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs"
 
 
+def _clean(code: str) -> str:
+    """Strip non-standard whitespace that causes visible artefacts in Monaco."""
+    from core.sql_formatter import _normalize_sql
+    return _normalize_sql(code)
+
+
 def editor(code: str, language: str = "sql", height: int = 400) -> str:
+    code = _clean(code)
     escaped = code.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
     return f"""<!DOCTYPE html>
 <html>
@@ -40,6 +47,8 @@ require(['vs/editor/editor.main'], function() {{
 
 
 def diff_editor(original: str, modified: str, language: str = "sql", height: int = 500) -> str:
+    original = _clean(original)
+    modified = _clean(modified)
     esc_orig = original.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
     esc_mod = modified.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
     return f"""<!DOCTYPE html>

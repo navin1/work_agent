@@ -294,7 +294,9 @@ def _get_tool_names(agent_output: dict) -> set:
 
 
 def _clean_output(output: str, tool_names: set) -> str:
-    """Strip markdown table lines from text when data tools are rendering the table themselves."""
+    """Normalise agent text: remove non-breaking spaces; strip markdown table rows
+    when data tools are rendering the table themselves."""
+    output = output.replace(chr(0xa0), " ")
     if not (_DATA_TOOLS & tool_names):
         return output
     return "\n".join(l for l in output.split("\n") if not l.strip().startswith("|")).strip()
