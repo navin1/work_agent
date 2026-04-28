@@ -49,9 +49,21 @@ def extract_sql(obj, _depth: int = 0) -> str | None:
     return None
 
 
+def _normalize_sql(sql: str) -> str:
+    """Replace non-standard whitespace characters that cause display artefacts."""
+    return (
+        sql
+        .replace(chr(0xa0),   " ")    # U+00A0 non-breaking space -> regular space
+        .replace(chr(0x200b), "")     # U+200B zero-width space -> remove
+        .replace(chr(0x2028), "\n")  # U+2028 Unicode line separator -> newline
+        .replace(chr(0x2029), "\n")  # U+2029 Unicode paragraph separator -> newline
+    )
+
+
 def format_sql(sql: str, dialect: str = "bigquery") -> str:
     if not sql or not sql.strip():
         return sql
+    sql = _normalize_sql(sql)
     if not _HAS_SQLGLOT:
         return sql
     try:
