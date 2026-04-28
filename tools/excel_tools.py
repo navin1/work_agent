@@ -20,6 +20,13 @@ def _safe_table_name(folder: str, stem: str) -> str:
     return name.strip("_")
 
 
+def _cast_arrow_to_string(arrow) -> "pa.Table":
+    """Cast every column in a PyArrow table to string (VARCHAR)."""
+    import pyarrow as pa
+    string_arrays = [col.cast(pa.string()) for col in arrow.columns]
+    return arrow.from_arrays(string_arrays, names=arrow.column_names)
+
+
 def _ingest_file(path: Path, folder: str) -> dict | None:
     """Ingest one Excel file into DuckDB. Returns registry entry or None on failure."""
     try:
@@ -49,13 +56,13 @@ def _ingest_file(path: Path, folder: str) -> dict | None:
             bq_table = ""
             dag_names: list[str] = []
         else:
-            # Row 1 col A = BQ table, col B = DAG names (comma-separated)
+            # Both bq_table and dag_names come from dag_mapping.json keyed by file stem
             # Rows 1-3 = metadata, row 4 = headers, row 5+ = data
             import pandas as pd
-            meta_df = pd.read_excel(str(path), header=None, nrows=3)
-            bq_table = str(meta_df.iloc[0, 0]) if not meta_df.empty else ""
-            raw_dags = str(meta_df.iloc[0, 1]) if meta_df.shape[1] > 1 else ""
-            dag_names = [d.strip() for d in raw_dags.split(",") if d.strip()]
+            dag_map = persistence.get_dag_mapping()
+            entry_meta = dag_map.get(stem) or dag_map.get(stem.lower()) or {}
+            bq_table = entry_meta.get("bq_table", "")
+            dag_names = entry_meta.get("dag_names", [])
 
             try:
                 import polars as pl
@@ -70,6 +77,7 @@ def _ingest_file(path: Path, folder: str) -> dict | None:
                 row_count = len(data_df)
                 arrow = pa.Table.from_pandas(data_df, preserve_index=False)
 
+        arrow = _cast_arrow_to_string(arrow)
         get_manager().register_table(table_name, arrow)
 
         entry = {
@@ -236,7 +244,7 @@ def get_table_schema(table_name: str) -> str:
 
 @tool
 def get_bq_table_for_mapping_file(mapping_file_name: str) -> str:
-    """Return the BigQuery table a mapping file maps to (from row 1, col A).
+    """Return the BigQuery table a mapping file maps to (sourced from dag_mapping.json).
     Returns BQ table reference string or 'not found'."""
     try:
         registry = persistence.get_registry()
@@ -254,7 +262,7 @@ def get_bq_table_for_mapping_file(mapping_file_name: str) -> str:
 
 @tool
 def get_dags_for_mapping_file(mapping_file_name: str) -> str:
-    """Return DAG names associated with a mapping file (from row 1, col B).
+    """Return DAG names associated with a mapping file (sourced from dag_mapping.json).
     Returns JSON list of DAG name strings."""
     try:
         registry = persistence.get_registry()
@@ -337,7 +345,7 @@ def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
         }
 
         if not dag_names:
-            result["note"] = "No DAG names found in row 1, col B of this mapping file."
+            result["note"] = "No DAG names found for this mapping file in dag_mapping.json."
             return json.dumps(result)
 
         # Resolve composer env

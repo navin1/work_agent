@@ -8,6 +8,9 @@ load_dotenv(Path(__file__).parent.parent / ".env", override=True)
 AGENT_MODEL: str = os.getenv("AGENT_MODEL", "gemini-2.5-pro")
 GOOGLE_CLOUD_PROJECT: str = os.getenv("GOOGLE_CLOUD_PROJECT", "")
 GOOGLE_CLOUD_LOCATION: str = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+# Path to a GCP service-account JSON file. When set, credentials are loaded from this file
+# instead of relying on Application Default Credentials (gcloud auth / metadata server).
+GOOGLE_APPLICATION_CREDENTIALS: str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 
 # Project charged for BigQuery slot usage — may differ from the data projects being queried.
 # Falls back to the first entry in BQ_ALLOWED_PROJECTS if not set.
@@ -65,6 +68,7 @@ HTTP_SSL_VERIFY: bool | str = _parse_ssl_verify()
 
 DATA_ROOT: str = os.getenv("DATA_ROOT", str(Path(__file__).parent.parent / "data"))
 USER_DATA_ROOT: str = os.getenv("USER_DATA_ROOT", str(Path(__file__).parent.parent / "user_data"))
+CONFIG_ROOT: str = os.getenv("CONFIG_ROOT", str(Path(__file__).parent.parent / "config"))
 EXPORTS_ROOT: str = os.getenv("EXPORTS_ROOT", str(Path(__file__).parent.parent / "exports"))
 AUDIT_LOG_PATH: str = os.getenv("AUDIT_LOG_PATH", str(Path(__file__).parent.parent / "audit_log.jsonl"))
 LARGE_FILE_ROW_THRESHOLD: int = int(os.getenv("LARGE_FILE_ROW_THRESHOLD", "50000"))

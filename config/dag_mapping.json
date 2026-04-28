@@ -1,0 +1,18 @@
+{
+  "rps800_reconciliation": {
+    "bq_table": "myproject.dataset.rps800_target",
+    "dag_names": ["dag_rps800_daily_load", "dag_rps800_validate"]
+  },
+  "product_master_mapping": {
+    "bq_table": "myproject.dataset.products",
+    "dag_names": ["dag_product_sync"]
+  },
+  "order_items_mapping": {
+    "bq_table": "myproject.dataset.order_items",
+    "dag_names": ["dag_order_items_ingest", "dag_order_items_transform"]
+  },
+  "customer_mapping": {
+    "bq_table": "myproject.dataset.customers",
+    "dag_names": ["dag_customer_load"]
+  }
+}

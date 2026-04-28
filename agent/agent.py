@@ -26,10 +26,26 @@ _CONVERSATIONAL = re.compile(
 )
 
 
+def _llm_credentials():
+    """Return service-account credentials if GOOGLE_APPLICATION_CREDENTIALS is set, else None."""
+    cred_path = config.GOOGLE_APPLICATION_CREDENTIALS
+    if not cred_path:
+        return None
+    from pathlib import Path as _Path
+    if not _Path(cred_path).is_file():
+        return None
+    from google.oauth2 import service_account
+    return service_account.Credentials.from_service_account_file(
+        cred_path,
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+
+
 def build_agent():
     llm = ChatGoogleGenerativeAI(
         model=config.AGENT_MODEL,
         temperature=0,
+        credentials=_llm_credentials(),
     )
     return create_react_agent(
         model=llm,
@@ -40,7 +56,11 @@ def build_agent():
 
 
 def _llm() -> ChatGoogleGenerativeAI:
-    return ChatGoogleGenerativeAI(model=config.AGENT_MODEL, temperature=0)
+    return ChatGoogleGenerativeAI(
+        model=config.AGENT_MODEL,
+        temperature=0,
+        credentials=_llm_credentials(),
+    )
 
 
 def run_agent(agent, raw_prompt: str) -> dict:

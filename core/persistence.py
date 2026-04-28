@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from core import config
 
 _ROOT = Path(config.USER_DATA_ROOT)
+_CONFIG_ROOT = Path(config.CONFIG_ROOT)
 
 _FILES = [
     "saved_queries.json",
@@ -156,6 +157,25 @@ def save_reconciliation_ignores(data: dict) -> None:
 
 def get_name_mappings() -> dict:
     return _cached("name_mappings.json")
+
+
+def get_dag_mapping() -> dict:
+    """Return {file_stem: {bq_table, dag_names}} mapping loaded from config/dag_mapping.json."""
+    if "dag_mapping.json" not in _cache:
+        p = _CONFIG_ROOT / "dag_mapping.json"
+        try:
+            _cache["dag_mapping.json"] = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        except Exception:
+            _cache["dag_mapping.json"] = {}
+    return _cache["dag_mapping.json"]
+
+
+def save_dag_mapping(data: dict) -> None:
+    _CONFIG_ROOT.mkdir(parents=True, exist_ok=True)
+    (_CONFIG_ROOT / "dag_mapping.json").write_text(
+        json.dumps(data, indent=2, default=str), encoding="utf-8"
+    )
+    _cache["dag_mapping.json"] = data
 
 
 # Auto-load all files on import
