@@ -21,10 +21,30 @@ def _safe_table_name(folder: str, stem: str) -> str:
 
 
 def _cast_arrow_to_string(arrow) -> "pa.Table":
-    """Cast every column in a PyArrow table to string (VARCHAR)."""
+    """Cast every column in a PyArrow table to VARCHAR/string.
+
+    Three-level fallback per column:
+      1. pyarrow.compute.cast  — fast, handles numeric/temporal types
+      2. stringify via to_pylist — handles binary, nested, and exotic types
+      3. null array             — last resort so ingestion never aborts
+    """
     import pyarrow as pa
-    string_arrays = [col.cast(pa.string()) for col in arrow.columns]
-    return arrow.from_arrays(string_arrays, names=arrow.column_names)
+    import pyarrow.compute as pc
+
+    string_arrays = []
+    for col in arrow.columns:
+        try:
+            string_arrays.append(pc.cast(col, pa.string()))
+        except Exception:
+            try:
+                string_arrays.append(pa.array(
+                    [str(v) if v is not None else None for v in col.to_pylist()],
+                    type=pa.string(),
+                ))
+            except Exception:
+                string_arrays.append(pa.nulls(len(col), type=pa.string()))
+
+    return pa.table(dict(zip(arrow.column_names, string_arrays)))
 
 
 def _ingest_file(path: Path, folder: str) -> dict | None:

@@ -285,6 +285,21 @@ import renderers.schema_audit_panel as _sap
 import renderers.file_browser as _fb
 
 
+_DATA_TOOLS = {"query_excel_data", "query_bigquery"}
+
+
+def _get_tool_names(agent_output: dict) -> set:
+    steps = agent_output.get("intermediate_steps", [])
+    return {s[0].tool for s in steps if len(s) >= 2}
+
+
+def _clean_output(output: str, tool_names: set) -> str:
+    """Strip markdown table lines from text when data tools are rendering the table themselves."""
+    if not (_DATA_TOOLS & tool_names):
+        return output
+    return "\n".join(l for l in output.split("\n") if not l.strip().startswith("|")).strip()
+
+
 def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
     steps = agent_output.get("intermediate_steps", [])
     if not steps:
@@ -388,7 +403,10 @@ _last_assistant_idx = max(
 
 for _i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        content = msg["content"]
+        if "panels" in msg:
+            content = _clean_output(content, _get_tool_names(msg["panels"]))
+        st.markdown(content)
         if "panels" in msg:
             dispatch_renderers(msg["panels"], is_history=(_i != _last_assistant_idx))
 
@@ -416,7 +434,7 @@ if _send:
         with st.spinner("Thinking…"):
             from agent.agent import run_agent
             result = run_agent(st.session_state.agent, _send)
-        st.markdown(result.get("output", ""))
+        st.markdown(_clean_output(result.get("output", ""), _get_tool_names(result)))
         dispatch_renderers(result)
 
     st.session_state.messages.append({
