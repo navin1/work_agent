@@ -61,16 +61,23 @@ def _ingest_file(path: Path, folder: str) -> dict | None:
             try:
                 import polars as pl
                 df_full = pl.read_excel(str(path))
+                try:
+                    df_full = df_full.select(pl.all().cast(pl.String))
+                except Exception:
+                    try:
+                        df_full = df_full.select(pl.all().cast(pl.Utf8))
+                    except Exception:
+                        pass
                 row_count = len(df_full)
                 if row_count > config.LARGE_FILE_ROW_THRESHOLD:
                     arrow = df_full.to_arrow()
                 else:
                     import pandas as pd
-                    df_pd = pd.read_excel(str(path), header=0)
+                    df_pd = pd.read_excel(str(path), header=0, dtype=str)
                     arrow = pa.Table.from_pandas(df_pd, preserve_index=False)
             except ImportError:
                 import pandas as pd
-                df_pd = pd.read_excel(str(path), header=0)
+                df_pd = pd.read_excel(str(path), header=0, dtype=str)
                 arrow = pa.Table.from_pandas(df_pd, preserve_index=False)
 
             bq_table = ""
@@ -88,12 +95,19 @@ def _ingest_file(path: Path, folder: str) -> dict | None:
                 import polars as pl
                 df_check = pl.read_excel(str(path), read_options={"skip_rows": 3})
                 if len(df_check) > config.LARGE_FILE_ROW_THRESHOLD:
+                    try:
+                        df_check = df_check.select(pl.all().cast(pl.String))
+                    except Exception:
+                        try:
+                            df_check = df_check.select(pl.all().cast(pl.Utf8))
+                        except Exception:
+                            pass
                     arrow = df_check.to_arrow()
                     row_count = len(df_check)
                 else:
                     raise ValueError("use pandas")
             except Exception:
-                data_df = pd.read_excel(str(path), header=3)
+                data_df = pd.read_excel(str(path), header=3, dtype=str)
                 row_count = len(data_df)
                 arrow = pa.Table.from_pandas(data_df, preserve_index=False)
 
