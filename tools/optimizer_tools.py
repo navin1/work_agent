@@ -303,9 +303,9 @@ def optimise_sql(sql: str, composer_env: str = None) -> str:
         system = _OPTIMISE_SYSTEM_PROMPT.format(**sdk_info)
         raw = _call_llm(system, f"Optimise this SQL:\n\n{sql}")
         parsed = extract_json(raw)
-        parsed["original_sql"] = format_sql(sql)
+        parsed["original_sql"] = format_sql(sql).replace("\xa0", " ").replace("\\xa0", " ")
         if "optimised_sql" in parsed:
-            parsed["optimised_sql"] = format_sql(parsed["optimised_sql"])
+            parsed["optimised_sql"] = format_sql(parsed["optimised_sql"]).replace("\xa0", " ").replace("\\xa0", " ")
         log_audit("optimizer_tools", "llm", "optimise_sql", duration_ms=int((time.time()-start)*1000))
         return json.dumps(parsed)
     except Exception as exc:
@@ -630,7 +630,7 @@ def optimise_all_dag_sqls(composer_env: str, dag_id: str) -> str:
             task_result = {
                 "task_id": task_id,
                 "has_sql": True,
-                "original_sql": format_sql(sql),
+                "original_sql": format_sql(sql).replace("\xa0", " ").replace("\\xa0", " "),
                 "flags": flags,
                 "optimised_sql": None,
                 "changes": [],
@@ -641,7 +641,7 @@ def optimise_all_dag_sqls(composer_env: str, dag_id: str) -> str:
             try:
                 raw = _call_llm(system, f"Optimise this SQL:\n\n{sql}")
                 parsed = extract_json(raw)
-                task_result["optimised_sql"] = format_sql(parsed.get("optimised_sql", sql))
+                task_result["optimised_sql"] = format_sql(parsed.get("optimised_sql", sql)).replace("\xa0", " ").replace("\\xa0", " ")
                 task_result["changes"] = parsed.get("changes", [])
                 task_result["confidence_score"] = parsed.get("overall_confidence_score")
                 task_result["summary"] = parsed.get("overall_summary", "")
@@ -716,8 +716,8 @@ def optimise_sql_file(file_path: str, composer_env: str = None) -> str:
                   duration_ms=int((time.time()-start)*1000))
         return json.dumps({
             "file_path": file_path,
-            "original_sql": format_sql(sql),
-            "optimised_sql": format_sql(parsed.get("optimised_sql", sql)),
+            "original_sql": format_sql(sql).replace("\xa0", " ").replace("\\xa0", " "),
+            "optimised_sql": format_sql(parsed.get("optimised_sql", sql)).replace("\xa0", " ").replace("\\xa0", " "),
             "flags": flags,
             "changes": parsed.get("changes", []),
             "overall_confidence_score": parsed.get("overall_confidence_score"),

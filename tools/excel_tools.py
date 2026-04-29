@@ -539,7 +539,7 @@ def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
                     if best:
                         dag_info["rendered_sqls"].append({
                             "task_id": tid,
-                            "rendered_sql": format_sql(best),
+                            "rendered_sql": format_sql(best).replace("\xa0", " ").replace("\\xa0", " "),
                         })
 
             except Exception as e:

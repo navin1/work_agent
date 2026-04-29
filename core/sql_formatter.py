@@ -52,15 +52,22 @@ def extract_sql(obj, _depth: int = 0) -> str | None:
 def format_sql(sql: str, dialect: str = "bigquery") -> str:
     if not sql or not sql.strip():
         return sql
+        
+    # Globally sanitize non-breaking spaces before formatting
+    sql = sql.replace("\xa0", " ").replace("\\xa0", " ")
+    
     if not _HAS_SQLGLOT:
         return sql
     try:
-        return sqlglot.transpile(sql, read=dialect, write=dialect, pretty=True)[0]
+        formatted = sqlglot.transpile(sql, read=dialect, write=dialect, pretty=True)[0]
     except Exception:
         try:
-            return sqlglot.transpile(sql, pretty=True)[0]
+            formatted = sqlglot.transpile(sql, pretty=True)[0]
         except Exception:
-            return sql
+            formatted = sql
+            
+    # Catch any residual literals that sqlglot might have preserved
+    return formatted.replace("\xa0", " ").replace("\\xa0", " ")
 
 
 def is_ddl_dml(sql: str) -> bool:
