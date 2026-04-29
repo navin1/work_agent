@@ -7,7 +7,9 @@ try:
 except ImportError:
     _HAS_SQLGLOT = False
 
-_SQL_RE = re.compile(r'\b(SELECT|WITH|INSERT|MERGE|UPDATE|DELETE|CREATE)\b', re.IGNORECASE)
+# Scoping constants
+MAX_FORMAT_SIZE = 300000  # Characters
+_SQL_RE = re.compile(r'\b(SELECT|WITH|INSERT|MERGE|UPDATE|DELETE|CREATE|DECLARE|SET|BEGIN|EXCEPTION)\b', re.IGNORECASE)
 
 
 def strip_jinja(sql: str) -> str:
@@ -59,32 +61,73 @@ def extract_sql(obj, _depth: int = 0) -> str | None:
 
 
 def format_sql(sql: str, dialect: str = "bigquery") -> str:
+    """
+    Standardizes, sanitizes, and beautifies SQL with a strict 'Data-Loss' protection.
+    """
     if not sql or not sql.strip():
         return sql
         
-    # Globally sanitize non-breaking spaces before formatting
-    sql = sql.replace("\xa0", " ").replace("\\xa0", " ")
+    # Phase 1: Deep Sanitization & Standardization
+    # Convert escaped chars, standardize tabs to 4 spaces, remove carriage returns
+    raw_sql = (sql.replace("\\n", "\n")
+                  .replace("\r", "")
+                  .replace("\t", "    ")
+                  .replace("\xa0", " ")
+                  .replace("\\xa0", " "))
     
-    if not _HAS_SQLGLOT:
-        return sql
+    # Logic Gate: Skip formatting if script is massive or library missing
+    if not _HAS_SQLGLOT or len(raw_sql) > MAX_FORMAT_SIZE:
+        return raw_sql
+
+    formatted = ""
     try:
-        formatted = sqlglot.transpile(sql, read=dialect, write=dialect, pretty=True)[0]
+        # Phase 2: Script-Level Transpilation
+        statements = sqlglot.transpile(raw_sql, read=dialect, write=dialect, pretty=True)
+        if not statements:
+            return raw_sql
+            
+        formatted = ";\n\n".join(s for s in statements if s)
+        
+        if formatted and (len(statements) > 1 or raw_sql.strip().endswith(";")):
+            formatted += ";"
+            
     except Exception:
         try:
-            formatted = sqlglot.transpile(sql, pretty=True)[0]
+            # Generic Fallback
+            statements = sqlglot.transpile(raw_sql, pretty=True)
+            formatted = ";\n\n".join(s for s in statements if s)
+            if formatted and (len(statements) > 1 or raw_sql.strip().endswith(";")):
+                formatted += ";"
         except Exception:
-            formatted = sql
+            return raw_sql 
             
-    # Catch any residual literals that sqlglot might have preserved
-    return formatted.replace("\xa0", " ").replace("\\xa0", " ")
+    # Phase 3: Post-Format Polish
+    formatted = formatted.replace("\xa0", " ").replace("\\xa0", " ")
+
+    # Phase 4: Data-Loss Safety Guardrail
+    # Revert if formatting drops > 15% of content or results in empty string
+    if (not formatted.strip() and raw_sql.strip()) or (len(formatted) < len(raw_sql) * 0.85):
+        return raw_sql
+
+    return formatted
 
 
 def is_ddl_dml(sql: str) -> bool:
+    """Identify state-changing commands while ignoring comments."""
     if not sql:
         return False
-    upper = sql.strip().upper()
-    forbidden = ("INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "MERGE", "TRUNCATE", "ALTER")
-    for kw in forbidden:
-        if upper.startswith(kw):
+    
+    # Strip comments (Single line and Block)
+    clean = re.sub(r'(--.*)|(/\*[\s\S]*?\*/)', '', sql).strip().upper()
+    if not clean:
+        return False
+
+    forbidden = ("INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "MERGE", 
+                 "TRUNCATE", "ALTER", "GRANT", "REVOKE", "CALL", "EXPORT")
+    
+    # Split by semicolon to inspect every statement in the script
+    statements = [s.strip() for s in clean.split(';') if s.strip()]
+    for stmt in statements:
+        if any(stmt.startswith(kw) for kw in forbidden):
             return True
     return False
