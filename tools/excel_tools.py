@@ -100,6 +100,8 @@ def _ingest_file(path: Path, folder: str) -> dict | None:
             excel_map = persistence.get_excel_mapping()
             entry_meta = excel_map.get(stem) or excel_map.get(stem.lower()) or {}
             bq_table = entry_meta.get("bq_table", "")
+            if isinstance(bq_table, list):
+                bq_table = ", ".join(bq_table)
             dag_names = entry_meta.get("dag_names", [])
 
             try:
@@ -188,7 +190,10 @@ def ingest_excel_files(folder_filter: str = None) -> dict:
                 _ingest_file(xlsx, folder_name)
                 meta = _dag_meta_for_path(str(xlsx))
                 if meta:
-                    existing["bq_table"] = meta.get("bq_table", existing.get("bq_table", ""))
+                    bq_t = meta.get("bq_table", existing.get("bq_table", ""))
+                    if isinstance(bq_t, list):
+                        bq_t = ", ".join(bq_t)
+                    existing["bq_table"] = bq_t
                     existing["dag_names"] = meta.get("dag_names", existing.get("dag_names", []))
                     registry_index[str(xlsx)] = existing
                 skipped.append(xlsx.name)
@@ -309,6 +314,8 @@ def get_bq_table_for_mapping_file(mapping_file_name: str) -> str:
                 log_audit("excel_tools", "registry", f"bq_table_for:{mapping_file_name}")
                 meta = _dag_meta_for_path(entry.get("file_path", ""))
                 bq_table = meta.get("bq_table") or entry.get("bq_table") or "not found"
+                if isinstance(bq_table, list):
+                    bq_table = ", ".join(bq_table)
                 return json.dumps({"bq_table": bq_table})
         return json.dumps({"bq_table": "not found"})
     except Exception as exc:
@@ -388,6 +395,8 @@ def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
 
         meta = _dag_meta_for_path(entry.get("file_path", ""))
         bq_table = meta.get("bq_table") or entry.get("bq_table", "")
+        if isinstance(bq_table, list):
+            bq_table = "\n".join(bq_table)
         dag_names = meta.get("dag_names") or entry.get("dag_names", [])
 
         result = {
