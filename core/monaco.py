@@ -4,6 +4,7 @@ _CDN = "https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs"
 
 
 def editor(code: str, language: str = "sql", height: int = 400) -> str:
+    code = code.replace("\xa0", " ").replace("\\xa0", " ")
     escaped = code.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
     return f"""<!DOCTYPE html>
 <html>

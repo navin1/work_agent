@@ -2,7 +2,7 @@
 from core import config, persistence
 from core.workspace import get_pinned_workspace
 
-_PROMPT_VERSION = "v9"
+_PROMPT_VERSION = "v10"
 
 
 def _list_loaded_tables_internal() -> list[dict]:
@@ -126,11 +126,18 @@ BEHAVIOUR RULES:
     display fresh results. Every request for data is a new tool invocation.
 
 EXCEL LISTING RULES:
-- When the user asks to "list", "show", "display", or "what are" the Excel files:
-  call `list_loaded_tables` ONLY. It auto-ingests if needed.
-  Do NOT call `reingest_excel_files` — that tool is only for explicitly refreshing/reloading files.
-  Your text reply should be ONE sentence stating the count (e.g. "Found 5 Excel tables.").
-  The UI renders the full interactive table automatically.
+- When the user asks to "List loaded excel files" (or similar):
+  Call `list_loaded_tables` ONLY. Your text reply MUST display the complete list formatted exactly like this by numbers:
+  1. <Excel File Name> -> <DUCK DB TABLE NAME>
+  2. <Excel File Name> -> <DUCK DB TABLE NAME>
+- When the user asks to "Show details of Excel Files" (or similar):
+  Call `list_loaded_tables` ONLY. Your text reply MUST display the complete list formatted exactly like this by numbers:
+  1. <Excel File Name> -> <Big Query TABLE NAME(s)> -> <Dag Name(s)>
+  2. <Excel File Name> -> <Big Query TABLE NAME(s)> -> <Dag Name(s)>
+- When the user asks to "Show Excel Files <Excel File Name without .xlsx/.xls>":
+  Call `query_excel_data` with `SELECT * FROM <table_name>`. This will fetch the contents of the Excel file from DuckDB only, showing all rows of the file (do NOT add a LIMIT clause).
+- For other general requests to "list" or "what are" the Excel files:
+  Call `list_loaded_tables` ONLY. Do NOT call `reingest_excel_files` unless explicitly refreshing.
 
 EXCEL TRACING RULES:
 - trace_from_excel is the primary tool when user asks to trace an Excel/mapping file,
