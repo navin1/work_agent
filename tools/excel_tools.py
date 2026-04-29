@@ -42,7 +42,7 @@ def _cast_arrow_to_string(arrow) -> "pa.Table":
     string_arrays = []
     for col in arrow.columns:
         try:
-            string_arrays.append(pc.cast(col, pa.string()))
+            string_arrays.append(pc.cast(col, pa.string(), safe=False))
         except Exception:
             try:
                 string_arrays.append(pa.array(
@@ -73,10 +73,10 @@ def _ingest_file(path: Path, folder: str) -> dict | None:
                 except TypeError:
                     df_full = pl.read_excel(str(path), read_options={"infer_schema_length": 0})
                 try:
-                    df_full = df_full.select(pl.all().cast(pl.String))
+                    df_full = df_full.select(pl.all().cast(pl.String, strict=False))
                 except Exception:
                     try:
-                        df_full = df_full.select(pl.all().cast(pl.Utf8))
+                        df_full = df_full.select(pl.all().cast(pl.Utf8, strict=False))
                     except Exception:
                         pass
                 row_count = len(df_full)
@@ -110,10 +110,10 @@ def _ingest_file(path: Path, folder: str) -> dict | None:
                     df_check = pl.read_excel(str(path), read_options={"skip_rows": 3, "infer_schema_length": 0})
                 if len(df_check) > config.LARGE_FILE_ROW_THRESHOLD:
                     try:
-                        df_check = df_check.select(pl.all().cast(pl.String))
+                        df_check = df_check.select(pl.all().cast(pl.String, strict=False))
                     except Exception:
                         try:
-                            df_check = df_check.select(pl.all().cast(pl.Utf8))
+                            df_check = df_check.select(pl.all().cast(pl.Utf8, strict=False))
                         except Exception:
                             pass
                     arrow = df_check.to_arrow()
