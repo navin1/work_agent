@@ -405,7 +405,7 @@ def render_dag_rendered_files(raw_json: str) -> None:
                 st.info("No SQL found for this task.")
 
 
-def render_dag_task_graph(raw_json: str) -> None:
+def render_dag_task_graph(raw_json: str, is_history: bool = False) -> None:
     try:
         data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
     except Exception:
@@ -467,6 +467,13 @@ def render_dag_task_graph(raw_json: str) -> None:
 
     # ── Section 2: Dependency Diagram ─────────────────────────────────────────
     st.markdown("#### Dependency Diagram")
+
+    if is_history:
+        diagram = data.get("diagram", "")
+        if diagram:
+            st.code(diagram, language=None)
+        return
+
     st.caption("🖱 Click any node to view details and fetch SQL.")
     try:
         from streamlit_flow import streamlit_flow

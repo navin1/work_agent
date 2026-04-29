@@ -315,7 +315,7 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
 
     # Suppress task graph / DAG details when the lineage graph already covers them
     if "get_dag_task_graph" in tools_called and not has_lineage:
-        _rt.render_dag_task_graph(tools_called["get_dag_task_graph"])
+        _rt.render_dag_task_graph(tools_called["get_dag_task_graph"], is_history=is_history)
 
     if "get_dag_details" in tools_called and not has_lineage:
         _rt.render_dag_details(tools_called["get_dag_details"])
@@ -380,24 +380,10 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
         _mvp.render_mapping_validation(tools_called["validate_mapping_rules"])
 
 
-# ── Chat history ──────────────────────────────────────────────────────────────
+# ── Chat input & state ────────────────────────────────────────────────────────
 
-# Find the index of the last assistant message so its panels stay interactive.
-# All earlier assistant messages use the static summary (no streamlit-flow component)
-# which prevents multiple flow instances from triggering competing reruns.
-_last_assistant_idx = max(
-    (i for i, m in enumerate(st.session_state.messages) if m["role"] == "assistant"),
-    default=-1,
-)
-
-for _i, msg in enumerate(st.session_state.messages):
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if "panels" in msg:
-            dispatch_renderers(msg["panels"], is_history=(_i != _last_assistant_idx))
-
-
-# ── Chat input ────────────────────────────────────────────────────────────────
+if "_pending_input" not in st.session_state:
+    st.session_state._pending_input = None
 
 # Handle suggested-prompt button clicks (prefill via session state)
 _prefill = st.session_state.pop("chat_prefill", None)
@@ -412,14 +398,40 @@ if prompt := st.chat_input(
     _send = prompt
 
 if _send:
-    st.session_state.messages.append({"role": "user", "content": _send})
+    st.session_state._pending_input = _send
+
+_active_prompt = st.session_state._pending_input
+
+
+# ── Chat history ──────────────────────────────────────────────────────────────
+
+# Find the index of the last assistant message so its panels stay interactive.
+# All earlier assistant messages use the static summary (no streamlit-flow component)
+# which prevents multiple flow instances from triggering competing reruns.
+_last_assistant_idx = max(
+    (i for i, m in enumerate(st.session_state.messages) if m["role"] == "assistant"),
+    default=-1,
+)
+
+for _i, msg in enumerate(st.session_state.messages):
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        if "panels" in msg:
+                is_hist = (_i != _last_assistant_idx) or bool(_active_prompt)
+                dispatch_renderers(msg["panels"], is_history=is_hist)
+
+
+# ── Process active prompt ─────────────────────────────────────────────────────
+
+if _active_prompt:
+    st.session_state.messages.append({"role": "user", "content": _active_prompt})
     with st.chat_message("user"):
-        st.markdown(_send)
+        st.markdown(_active_prompt)
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking…"):
             from agent.agent import run_agent
-            result = run_agent(st.session_state.agent, _send)
+            result = run_agent(st.session_state.agent, _active_prompt)
         st.markdown(result.get("output", ""))
         dispatch_renderers(result)
 
@@ -428,3 +440,6 @@ if _send:
         "content": result.get("output", ""),
         "panels": result,
     })
+
+    st.session_state._pending_input = None
+    st.rerun()
