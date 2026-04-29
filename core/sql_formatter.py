@@ -10,6 +10,15 @@ except ImportError:
 _SQL_RE = re.compile(r'\b(SELECT|WITH|INSERT|MERGE|UPDATE|DELETE|CREATE)\b', re.IGNORECASE)
 
 
+def strip_jinja(sql: str) -> str:
+    """Replace Jinja2 templates with SQL-safe placeholders for AST parsing.
+    Does NOT modify the original string returned to the UI — call this only
+    before passing SQL to sqlglot for structural analysis."""
+    sql = re.sub(r"\{\{.*?\}\}", "'__JINJA__'", sql, flags=re.DOTALL)
+    sql = re.sub(r"\{%-?.*?-?%\}", " ", sql, flags=re.DOTALL)
+    return sql
+
+
 def extract_sql(obj, _depth: int = 0) -> str | None:
     """Recursively extract SQL from an Airflow renderedFields / task-definition dict.
 

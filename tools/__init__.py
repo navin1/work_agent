@@ -67,6 +67,9 @@ from tools.browse_tools import (
     browse_gcs,
     browse_git,
 )
+from tools.mapping_validation_tools import (
+    validate_mapping_rules,
+)
 
 ALL_TOOLS = [
     # Excel / mapping
@@ -119,6 +122,8 @@ ALL_TOOLS = [
     # File browser
     browse_gcs,
     browse_git,
+    # Mapping validation
+    validate_mapping_rules,
     # User
     save_query,
     get_saved_queries,

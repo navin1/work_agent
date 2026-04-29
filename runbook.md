@@ -8,10 +8,95 @@ Ask questions in plain English. The agent plans, calls the right tools, and retu
 
 | Example | What it does |
 |---|---|
-| `What mapping files are loaded?` | Lists all ingested Excel files with their BQ table references and DAG associations |
+| `List loaded excel files` | Numbered list: `<File> → <DuckDB table>` |
+| `Show details of Excel files` | Numbered list: `<File> → <BQ table(s)> → <DAG(s)>` |
+| `Show Excel Files rps800_reconciliation` | Displays all rows of that file from DuckDB (no LIMIT) |
 | `Query the rps800_mapping table where status = active` | Runs DuckDB SQL across Excel data |
 | `Which mapping files link to DAG dag_rps800_daily?` | Looks up DAG associations from registry |
-| `Get the BQ table for mapping file reconciliation.xlsx` | Returns the target BigQuery table |
+| `Get the BQ table for mapping file reconciliation.xlsx` | Returns the target BigQuery table(s) |
+
+**Config file:** `config/excel_mapping.json` maps each Excel file stem to its BigQuery tables, DAG names, and optional column role overrides.
+
+```jsonc
+// config/excel_mapping.json
+{
+  "rps800_reconciliation": {
+    "bq_table": ["project.dataset.rps800_target"],   // always a list
+    "dag_names": ["dag_rps800_load"],
+    "mapping_columns": {              // null = auto-detected from column names
+      "target": null,                 // e.g. "Target Column"
+      "source": null,                 // e.g. "Source Column"
+      "logic": null,                  // e.g. "Transformation Logic"
+      "logic_supplementary": [],      // e.g. ["Special Conditions", "Notes"]
+      "bq_table": null,               // column in sheet that names the target BQ table
+      "multi_row_key": null           // column that groups multi-row rules (defaults to target)
+    }
+  }
+}
+```
+
+---
+
+### Mapping Validation
+
+Validates that every transformation rule in an Excel mapping sheet is correctly implemented in the DAG's SQL. Works even when logic is written in plain English.
+
+| Example | What it does |
+|---|---|
+| `Validate mapping rules for rps800_reconciliation` | Full rule-by-rule validation against rendered DAG SQL |
+| `Validate rps800_reconciliation in prod` | Same, scoped to a specific Composer environment |
+| `Validate rps800_reconciliation task load_employees` | Validate against one specific task's SQL only |
+| `Validate rps800_reconciliation for target column net_salary` | Narrow to one column |
+| `Re-validate rps800_reconciliation` | Force-refresh (bypass cache, re-run all LLM evaluations) |
+
+**How it works:**
+1. Extracts transformation rules from the Excel file in DuckDB
+2. Auto-detects which columns hold target, source, and logic (or reads from `excel_mapping.json`)
+3. Strips Jinja2 templates, deconstructs DAG SQL into CTEs / JOINs / WHERE / GROUP BY / aggregations using sqlglot
+4. Two-step LLM evaluation per rule: Step A identifies the relevant SQL clause(s); Step B verifies whether the rule is implemented correctly
+5. Results are cached (keyed by content hash) — subsequent calls are instant unless SQL or rules change
+
+**Verdicts:**
+
+| Verdict | Meaning |
+|---|---|
+| 🟢 PASS | Rule correctly implemented in SQL |
+| 🔴 FAIL | Mismatch found (wrong JOIN type, missing filter, wrong aggregation, etc.) |
+| 🟡 PARTIAL | Partially implemented — some conditions satisfied, others missing |
+| ⚪ N/A | Rule text indicates no SQL transformation required |
+| 🔵 No SQL | SQL unavailable (Composer not configured or DAG not found) |
+| ⚠️ ERROR | Evaluation failed — see Raw tab for detail |
+
+**Confidence tiers** (assigned by rule type, not by LLM):
+
+| Tier | Rule types | Action required |
+|---|---|---|
+| HIGH | Direct rename, simple CASE WHEN, JOIN type check | Trust verdict |
+| MEDIUM | Aggregation, filter condition, join + aggregation | Review if FAIL |
+| LOW | Multi-table allocation, complex multi-column logic | Human sign-off required before marking validated |
+
+**UI Panel:** Summary cards → filterable matrix (by verdict) → per-rule expandable rows with four tabs:
+- **Rule** — target/source columns, rule type, full rule text
+- **SQL Evidence** — the specific SQL snippet the LLM evaluated (Monaco editor)
+- **AI Reasoning** — verdict badge + reason + specific flags
+- **Raw** — full JSON for debugging
+
+LOW confidence rows show a warning banner and a **Mark as Human-Reviewed** button (session-scoped).
+
+**Column auto-detection** (order = priority, first match wins):
+
+| Role | Tries (in order) |
+|---|---|
+| target | `target`, `target_column`, `target_field`, `bq_column`, `field_name`, `output_column` |
+| source | `source`, `source_column`, `src_column`, `from_column`, `input_column` |
+| logic | `transformation_logic`, `mapping_logic`, `logic`, `mapping_rule`, `calculation`, `rule`, `description`, `notes` |
+| bq_table | `bq_table`, `target_table`, `destination_table`, `table_name`, `bigquery_table` |
+
+Supplementary logic columns (those whose names contain `condition`, `note`, `remark`, `exception`, `qualifier`) are automatically appended to the primary logic text.
+
+Override any role by setting the corresponding key in `mapping_columns` in `config/excel_mapping.json`.
+
+**Verdict cache:** Results are stored in `user_data/validation_cache.json` (max 1 000 entries, oldest-first eviction). Use `force_refresh=True` or say "re-validate" to bust the cache.
 
 ---
 
@@ -179,47 +264,59 @@ Ask questions in plain English. The agent plans, calls the right tools, and retu
 ## Architecture Overview *(developer reference)*
 
 ```
-app.py                    ← Streamlit entrypoint, session state, chat loop,
-                            renderer dispatcher (dispatch_renderers)
+app.py                        ← Streamlit entrypoint, session state, chat loop,
+                                renderer dispatcher (dispatch_renderers)
 agent/
-  agent.py                ← LangGraph ReAct agent builder + run_agent()
-  system_prompt.py        ← Dynamic prompt (workspace, glossary, loaded tables)
-  preprocessor.py         ← Glossary expansion before prompt hits the LLM
+  agent.py                    ← LangGraph ReAct agent builder + run_agent()
+  system_prompt.py            ← Dynamic prompt (workspace, glossary, loaded tables,
+                                mapping validation + excel listing rules)
+  preprocessor.py             ← Glossary expansion before prompt hits the LLM
+config/
+  excel_mapping.json          ← Per-file config: bq_table (list), dag_names,
+                                mapping_columns role overrides (target/source/logic/…)
 tools/
-  __init__.py             ← ALL_TOOLS registry (manual — must be kept in sync)
-  bigquery_tools.py       ← BQ query, dataset/table list, job stats
-  browse_tools.py         ← browse_gcs, browse_git, fetch helpers
-  code_tools.py           ← read_file, compare_git_gcs, optimise_file/folder
-  composer_tools.py       ← 12 Airflow tools: DAGs, runs, tasks, SQL, logs
-  excel_tools.py          ← DuckDB ingest, query, registry, lineage trace
-  optimizer_tools.py      ← SQL flags, optimise_sql, optimise_dag, optimise_all
-  reconciliation_tools.py ← Three-way Git/GCS/mapping reconciliation
-  schema_tools.py         ← BQ schema introspection, MySQL→BQ schema audit
-  testing_tools.py        ← compare_query_outputs, validate_optimisation
-  user_tools.py           ← Saved queries, glossary, workspace pin, favorites
+  __init__.py                 ← ALL_TOOLS registry (manual — must be kept in sync)
+  bigquery_tools.py           ← BQ query, dataset/table list, job stats
+  browse_tools.py             ← browse_gcs, browse_git, fetch helpers
+  code_tools.py               ← read_file, compare_git_gcs, optimise_file/folder
+  composer_tools.py           ← 12 Airflow tools: DAGs, runs, tasks, SQL, logs
+  excel_tools.py              ← DuckDB ingest, query, registry, lineage trace
+  mapping_validation_tools.py ← validate_mapping_rules: rule extraction → sqlglot
+                                deconstruction → two-step LLM evaluation →
+                                L1+L2 verdict cache
+  optimizer_tools.py          ← SQL flags, optimise_sql, optimise_dag, optimise_all
+  reconciliation_tools.py     ← Three-way Git/GCS/mapping reconciliation
+  schema_tools.py             ← BQ schema introspection, MySQL→BQ schema audit
+  testing_tools.py            ← compare_query_outputs, validate_optimisation
+  user_tools.py               ← Saved queries, glossary, workspace pin, favorites
 core/
-  config.py               ← All env vars and constants
-  auth.py                 ← GCP credential provider
-  persistence.py          ← JSON-backed registry, glossary, saved queries
-  duckdb_manager.py       ← Singleton DuckDB connection
-  workspace.py            ← Pinned workspace read/write
-  audit.py                ← Structured audit log per tool call
-  llm.py                  ← LLM client factory
-  monaco.py               ← Monaco editor HTML builder
-  sql_formatter.py        ← SQL pretty-printer
-  json_utils.py           ← safe_json serialiser
+  config.py                   ← All env vars and constants
+  auth.py                     ← GCP credential provider
+  persistence.py              ← JSON-backed store: registry, glossary, saved queries,
+                                validation_cache (L2 verdict store, max 1 000 entries)
+  duckdb_manager.py           ← Singleton DuckDB connection
+  workspace.py                ← Pinned workspace read/write
+  audit.py                    ← Structured audit log per tool call
+  llm.py                      ← LLM client factory
+  monaco.py                   ← Monaco editor HTML builder (strips \xa0 before render)
+  sql_formatter.py            ← SQL pretty-printer; strip_jinja() for AST-safe parsing
+  json_utils.py               ← safe_json serialiser
 renderers/
-  results_table.py        ← DAG list, task SQL, BQ/Excel query results
-  optimised_file_viewer.py← Diff viewer, DAG doc_md panel, file content, folder
-  lineage_graph.py        ← Streamlit-flow lineage graph
-  file_browser.py         ← GCS/Git file browser with click-to-view
-  diff_viewer.py          ← Inline SQL before/after diff
-  reconciliation_panel.py ← Reconciliation findings UI
-  schema_audit_panel.py   ← Schema audit colour-coded results
-  schema_tree.py          ← BQ schema tree viewer
-  performance_matrix.py   ← Task performance heat-map
-  run_history_chart.py    ← DAG run history chart
-  validation_panel.py     ← Optimisation validation verdict
+  results_table.py            ← DAG list, task SQL, BQ/Excel query results
+  mapping_validation_panel.py ← Traceability matrix: rule × verdict × SQL evidence;
+                                verdict filter, Monaco SQL evidence, LOW-conf review btn
+  optimised_file_viewer.py    ← Diff viewer, DAG doc_md panel, file content, folder
+  lineage_graph.py            ← Streamlit-flow lineage graph
+  file_browser.py             ← GCS/Git file browser with click-to-view
+  diff_viewer.py              ← Inline SQL before/after diff
+  reconciliation_panel.py     ← Reconciliation findings UI
+  schema_audit_panel.py       ← Schema audit colour-coded results
+  schema_tree.py              ← BQ schema tree viewer
+  performance_matrix.py       ← Task performance heat-map
+  run_history_chart.py        ← DAG run history chart
+  validation_panel.py         ← Optimisation validation verdict
+user_data/
+  validation_cache.json       ← Persistent verdict cache (sha256 → verdict dict)
 ```
 
 ### Known architectural debt (address as scope grows)

@@ -283,6 +283,7 @@ import renderers.optimised_file_viewer as _ofv
 import renderers.lineage_graph as _lg
 import renderers.schema_audit_panel as _sap
 import renderers.file_browser as _fb
+import renderers.mapping_validation_panel as _mvp
 
 
 def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
@@ -374,6 +375,9 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
 
     if "browse_git" in tools_called:
         _fb.render_file_browser(tools_called["browse_git"])
+
+    if "validate_mapping_rules" in tools_called:
+        _mvp.render_mapping_validation(tools_called["validate_mapping_rules"])
 
 
 # ── Chat history ──────────────────────────────────────────────────────────────

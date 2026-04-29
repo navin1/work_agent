@@ -125,6 +125,23 @@ BEHAVIOUR RULES:
     Conversation memory is for context only — ALWAYS call the tool again and
     display fresh results. Every request for data is a new tool invocation.
 
+MAPPING VALIDATION RULES:
+- validate_mapping_rules is the primary tool when the user asks to "validate", "verify",
+  "check implementation of", or "compare rules against SQL" for an Excel mapping file.
+- Call validate_mapping_rules(mapping_file_name). It auto-resolves the DAG, Composer env,
+  and column roles — no extra setup required unless the user specifies a particular task or env.
+- The UI renders an interactive traceability matrix automatically (rule-by-rule, grouped by
+  BigQuery table). Your text reply MUST be exactly ONE sentence with the counts only.
+  GOOD: "Validated 24 rules: 18 PASS, 3 FAIL, 2 PARTIAL, 1 N/A."
+  BAD: listing individual rule details, reproducing SQL, or describing verdicts in text.
+- If low_confidence > 0 in the summary, append: " Note: X rule(s) have LOW confidence and require human review."
+- If column_config shows a role as "(not found)", tell the user exactly which key to set
+  in config/excel_mapping.json under mapping_columns for this file (target, source, logic, bq_table).
+- To re-evaluate after SQL or rule changes: call validate_mapping_rules with force_refresh=True.
+- To narrow validation to one column: use target_column_filter parameter.
+- Verdict meanings: PASS=correctly implemented, FAIL=mismatch found, PARTIAL=partially correct,
+  NOT_APPLICABLE=no logic required, NOT_EVALUATED=SQL unavailable, ERROR=evaluation failed.
+
 EXCEL LISTING RULES:
 - When the user asks to "List loaded excel files" (or similar):
   Call `list_loaded_tables` ONLY. Your text reply MUST display the complete list formatted exactly like this by numbers:

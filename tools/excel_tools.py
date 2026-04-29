@@ -13,11 +13,11 @@ from core.sql_formatter import extract_sql
 
 
 def _dag_meta_for_path(file_path: str) -> dict:
-    """Return {bq_table, dag_names} for a file stem by reading dag_mapping.json directly.
+    """Return {bq_table, dag_names, mapping_columns} for a file stem from excel_mapping.json.
     Always reads the live JSON, never trusts stale registry values."""
     stem = Path(file_path).stem
-    dag_map = persistence.get_dag_mapping()
-    return dag_map.get(stem) or dag_map.get(stem.lower()) or {}
+    excel_map = persistence.get_excel_mapping()
+    return excel_map.get(stem) or excel_map.get(stem.lower()) or {}
 
 
 def _safe_table_name(folder: str, stem: str) -> str:
@@ -94,11 +94,11 @@ def _ingest_file(path: Path, folder: str) -> dict | None:
             bq_table = ""
             dag_names: list[str] = []
         else:
-            # Both bq_table and dag_names come from dag_mapping.json keyed by file stem
+            # Both bq_table and dag_names come from excel_mapping.json keyed by file stem
             # Rows 1-3 = metadata, row 4 = headers, row 5+ = data
             import pandas as pd
-            dag_map = persistence.get_dag_mapping()
-            entry_meta = dag_map.get(stem) or dag_map.get(stem.lower()) or {}
+            excel_map = persistence.get_excel_mapping()
+            entry_meta = excel_map.get(stem) or excel_map.get(stem.lower()) or {}
             bq_table = entry_meta.get("bq_table", "")
             dag_names = entry_meta.get("dag_names", [])
 
@@ -297,7 +297,7 @@ def get_table_schema(table_name: str) -> str:
 
 @tool
 def get_bq_table_for_mapping_file(mapping_file_name: str) -> str:
-    """Return the BigQuery table a mapping file maps to (sourced from dag_mapping.json).
+    """Return the BigQuery table(s) a mapping file maps to (sourced from excel_mapping.json).
     Returns BQ table reference string or 'not found'."""
     try:
         registry = persistence.get_registry()
@@ -317,7 +317,7 @@ def get_bq_table_for_mapping_file(mapping_file_name: str) -> str:
 
 @tool
 def get_dags_for_mapping_file(mapping_file_name: str) -> str:
-    """Return DAG names associated with a mapping file (sourced from dag_mapping.json).
+    """Return DAG names associated with a mapping file (sourced from excel_mapping.json).
     Returns JSON list of DAG name strings."""
     try:
         registry = persistence.get_registry()
@@ -403,7 +403,7 @@ def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
         }
 
         if not dag_names:
-            result["note"] = "No DAG names found for this mapping file in dag_mapping.json."
+            result["note"] = "No DAG names found for this mapping file in excel_mapping.json."
             return json.dumps(result)
 
         # Resolve composer env

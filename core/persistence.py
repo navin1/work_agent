@@ -19,6 +19,7 @@ _FILES = [
     "registry.json",
     "reconciliation_ignores.json",
     "name_mappings.json",
+    "validation_cache.json",
 ]
 
 _DEFAULTS = {
@@ -37,6 +38,7 @@ _DEFAULTS = {
     "registry.json": [],
     "reconciliation_ignores.json": {},
     "name_mappings.json": {},
+    "validation_cache.json": {},
 }
 
 _cache: dict = {}
@@ -159,23 +161,48 @@ def get_name_mappings() -> dict:
     return _cached("name_mappings.json")
 
 
-def get_dag_mapping() -> dict:
-    """Return {file_stem: {bq_table, dag_names}} mapping loaded from config/dag_mapping.json."""
-    if "dag_mapping.json" not in _cache:
-        p = _CONFIG_ROOT / "dag_mapping.json"
+def get_validation_cache() -> dict:
+    """Return the persistent verdict cache {sha256_key: {verdict, reason, evidence, ...}}.
+    Keyed by sha256(rule_text + sql_clauses). Max 1000 entries."""
+    return _cached("validation_cache.json")
+
+
+def save_validation_cache(data: dict) -> None:
+    _cache["validation_cache.json"] = data
+    save("validation_cache.json", data)
+
+
+def get_excel_mapping() -> dict:
+    """Return {file_stem: {bq_table, dag_names, mapping_columns}} loaded from config/excel_mapping.json.
+    bq_table is always a list. mapping_columns keys (target, source, logic, logic_supplementary,
+    bq_table, multi_row_key) are null when not explicitly configured — auto-detection applies."""
+    if "excel_mapping.json" not in _cache:
+        p = _CONFIG_ROOT / "excel_mapping.json"
+        # Fall back to legacy dag_mapping.json on first run after rename
+        if not p.exists():
+            p = _CONFIG_ROOT / "dag_mapping.json"
         try:
-            _cache["dag_mapping.json"] = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+            raw = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+            # Normalise bq_table to always be a list
+            for entry in raw.values():
+                if isinstance(entry.get("bq_table"), str):
+                    entry["bq_table"] = [entry["bq_table"]]
+                entry.setdefault("mapping_columns", {
+                    "target": None, "source": None, "logic": None,
+                    "logic_supplementary": [], "bq_table": None, "multi_row_key": None,
+                })
+            _cache["excel_mapping.json"] = raw
         except Exception:
-            _cache["dag_mapping.json"] = {}
-    return _cache["dag_mapping.json"]
+            _cache["excel_mapping.json"] = {}
+    return _cache["excel_mapping.json"]
 
 
-def save_dag_mapping(data: dict) -> None:
+def save_excel_mapping(data: dict) -> None:
     _CONFIG_ROOT.mkdir(parents=True, exist_ok=True)
-    (_CONFIG_ROOT / "dag_mapping.json").write_text(
+    (_CONFIG_ROOT / "excel_mapping.json").write_text(
         json.dumps(data, indent=2, default=str), encoding="utf-8"
     )
-    _cache["dag_mapping.json"] = data
+    _cache["excel_mapping.json"] = data
 
 
 # Auto-load all files on import
