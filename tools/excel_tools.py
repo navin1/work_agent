@@ -12,6 +12,14 @@ from core.duckdb_manager import get_manager
 from core.sql_formatter import extract_sql
 
 
+def _dag_meta_for_path(file_path: str) -> dict:
+    """Return {bq_table, dag_names} for a file stem by reading dag_mapping.json directly.
+    Always reads the live JSON, never trusts stale registry values."""
+    stem = Path(file_path).stem
+    dag_map = persistence.get_dag_mapping()
+    return dag_map.get(stem) or dag_map.get(stem.lower()) or {}
+
+
 def _safe_table_name(folder: str, stem: str) -> str:
     import re
     name = f"{folder}_{stem}".lower()
@@ -21,10 +29,30 @@ def _safe_table_name(folder: str, stem: str) -> str:
 
 
 def _cast_arrow_to_string(arrow) -> "pa.Table":
-    """Cast every column in a PyArrow table to string (VARCHAR)."""
+    """Cast every column in a PyArrow table to VARCHAR/string.
+
+    Three-level fallback per column:
+      1. pyarrow.compute.cast  — fast, handles numeric/temporal types
+      2. stringify via to_pylist — handles binary, nested, and exotic types
+      3. null array             — last resort so ingestion never aborts
+    """
     import pyarrow as pa
-    string_arrays = [col.cast(pa.string()) for col in arrow.columns]
-    return arrow.from_arrays(string_arrays, names=arrow.column_names)
+    import pyarrow.compute as pc
+
+    string_arrays = []
+    for col in arrow.columns:
+        try:
+            string_arrays.append(pc.cast(col, pa.string()))
+        except Exception:
+            try:
+                string_arrays.append(pa.array(
+                    [str(v) if v is not None else None for v in col.to_pylist()],
+                    type=pa.string(),
+                ))
+            except Exception:
+                string_arrays.append(pa.nulls(len(col), type=pa.string()))
+
+    return pa.table(dict(zip(arrow.column_names, string_arrays)))
 
 
 def _ingest_file(path: Path, folder: str) -> dict | None:
@@ -40,17 +68,27 @@ def _ingest_file(path: Path, folder: str) -> dict | None:
         if is_master:
             try:
                 import polars as pl
-                df_full = pl.read_excel(str(path))
+                try:
+                    df_full = pl.read_excel(str(path), infer_schema_length=0)
+                except TypeError:
+                    df_full = pl.read_excel(str(path), read_options={"infer_schema_length": 0})
+                try:
+                    df_full = df_full.select(pl.all().cast(pl.String))
+                except Exception:
+                    try:
+                        df_full = df_full.select(pl.all().cast(pl.Utf8))
+                    except Exception:
+                        pass
                 row_count = len(df_full)
                 if row_count > config.LARGE_FILE_ROW_THRESHOLD:
                     arrow = df_full.to_arrow()
                 else:
                     import pandas as pd
-                    df_pd = pd.read_excel(str(path), header=0)
+                    df_pd = pd.read_excel(str(path), header=0, dtype=str)
                     arrow = pa.Table.from_pandas(df_pd, preserve_index=False)
             except ImportError:
                 import pandas as pd
-                df_pd = pd.read_excel(str(path), header=0)
+                df_pd = pd.read_excel(str(path), header=0, dtype=str)
                 arrow = pa.Table.from_pandas(df_pd, preserve_index=False)
 
             bq_table = ""
@@ -66,14 +104,24 @@ def _ingest_file(path: Path, folder: str) -> dict | None:
 
             try:
                 import polars as pl
-                df_check = pl.read_excel(str(path), read_options={"skip_rows": 3})
+                try:
+                    df_check = pl.read_excel(str(path), infer_schema_length=0, read_options={"skip_rows": 3})
+                except TypeError:
+                    df_check = pl.read_excel(str(path), read_options={"skip_rows": 3, "infer_schema_length": 0})
                 if len(df_check) > config.LARGE_FILE_ROW_THRESHOLD:
+                    try:
+                        df_check = df_check.select(pl.all().cast(pl.String))
+                    except Exception:
+                        try:
+                            df_check = df_check.select(pl.all().cast(pl.Utf8))
+                        except Exception:
+                            pass
                     arrow = df_check.to_arrow()
                     row_count = len(df_check)
                 else:
                     raise ValueError("use pandas")
             except Exception:
-                data_df = pd.read_excel(str(path), header=3)
+                data_df = pd.read_excel(str(path), header=3, dtype=str)
                 row_count = len(data_df)
                 arrow = pa.Table.from_pandas(data_df, preserve_index=False)
 
@@ -138,6 +186,11 @@ def ingest_excel_files(folder_filter: str = None) -> dict:
             existing = registry_index.get(str(xlsx))
             if existing and existing.get("file_mtime") == xlsx.stat().st_mtime:
                 _ingest_file(xlsx, folder_name)
+                meta = _dag_meta_for_path(str(xlsx))
+                if meta:
+                    existing["bq_table"] = meta.get("bq_table", existing.get("bq_table", ""))
+                    existing["dag_names"] = meta.get("dag_names", existing.get("dag_names", []))
+                    registry_index[str(xlsx)] = existing
                 skipped.append(xlsx.name)
                 continue
             entry = _ingest_file(xlsx, folder_name)
@@ -254,7 +307,9 @@ def get_bq_table_for_mapping_file(mapping_file_name: str) -> str:
         for entry in registry:
             if name_lower in entry.get("file_path", "").lower() or name_lower in entry.get("table_name", "").lower():
                 log_audit("excel_tools", "registry", f"bq_table_for:{mapping_file_name}")
-                return json.dumps({"bq_table": entry.get("bq_table", "not found")})
+                meta = _dag_meta_for_path(entry.get("file_path", ""))
+                bq_table = meta.get("bq_table") or entry.get("bq_table") or "not found"
+                return json.dumps({"bq_table": bq_table})
         return json.dumps({"bq_table": "not found"})
     except Exception as exc:
         return json.dumps({"error": str(exc)})
@@ -272,7 +327,9 @@ def get_dags_for_mapping_file(mapping_file_name: str) -> str:
         for entry in registry:
             if name_lower in entry.get("file_path", "").lower() or name_lower in entry.get("table_name", "").lower():
                 log_audit("excel_tools", "registry", f"dags_for:{mapping_file_name}")
-                return json.dumps(entry.get("dag_names", []))
+                meta = _dag_meta_for_path(entry.get("file_path", ""))
+                dag_names = meta.get("dag_names") or entry.get("dag_names", [])
+                return json.dumps(dag_names)
         return json.dumps([])
     except Exception as exc:
         return json.dumps({"error": str(exc)})
@@ -329,8 +386,9 @@ def trace_from_excel(mapping_file_name: str, composer_env: str = None) -> str:
                 "available": [e.get("table_name") for e in registry],
             })
 
-        bq_table = entry.get("bq_table", "")
-        dag_names = entry.get("dag_names", [])
+        meta = _dag_meta_for_path(entry.get("file_path", ""))
+        bq_table = meta.get("bq_table") or entry.get("bq_table", "")
+        dag_names = meta.get("dag_names") or entry.get("dag_names", [])
 
         result = {
             "excel_file": Path(entry.get("file_path", "")).name,
