@@ -275,6 +275,7 @@ def _extract_sql_from_truncated_config(s: str) -> str | None:
         #   \\'   in JSON source → \'  in Python memory (2 chars) → '
         sql_raw = (sql_raw
                    .replace("\\\\n", "\n")   # \\n  → newline
+                   .replace("\\\\n", "\n")   # Sometimes just \\n is seen
                    .replace("\\\\t", "\t")   # \\t  → tab
                    .replace("\\'", "'")       # \'   → '
                    .replace('\\"', '"')       # \"   → "

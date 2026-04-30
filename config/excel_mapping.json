@@ -1,50 +1,15 @@
 {
-  "rps800_reconciliation": {
-    "bq_table": ["myproject.dataset.rps800_target"],
-    "dag_names": ["dag_rps800_daily_load", "dag_rps800_validate"],
-    "mapping_columns": {
-      "target": null,
-      "source": null,
-      "logic": null,
-      "logic_supplementary": [],
-      "bq_table": null,
-      "multi_row_key": null
-    }
-  },
-  "product_master_mapping": {
-    "bq_table": ["myproject.dataset.products"],
-    "dag_names": ["dag_product_sync"],
-    "mapping_columns": {
-      "target": null,
-      "source": null,
-      "logic": null,
-      "logic_supplementary": [],
-      "bq_table": null,
-      "multi_row_key": null
-    }
-  },
-  "order_items_mapping": {
-    "bq_table": ["myproject.dataset.order_items"],
-    "dag_names": ["dag_order_items_ingest", "dag_order_items_transform"],
-    "mapping_columns": {
-      "target": null,
-      "source": null,
-      "logic": null,
-      "logic_supplementary": [],
-      "bq_table": null,
-      "multi_row_key": null
-    }
-  },
-  "customer_mapping": {
-    "bq_table": ["myproject.dataset.customers"],
-    "dag_names": ["dag_customer_load"],
-    "mapping_columns": {
-      "target": null,
-      "source": null,
-      "logic": null,
-      "logic_supplementary": [],
-      "bq_table": null,
-      "multi_row_key": null
-    }
+  "rps_s_fee_item_snap": {
+  "bq_table": ["mtech-daas-customer-sdata-qa.raw_cust.rps_s_fee_item_snap"],
+  "dag_names": ["eda_osr_rps_285"],
+  "mapping_columns": {
+    "target": "BQ Column Name",
+    "source": "Column Name",
+    "logic": "Column Name",
+    "logic_supplementary": ["Table/File Name", "Notes"],
+    "bq_table": "mtech-daas-customer-sdata-qa.raw_cust.rps_s_fee_item_snap",
+    "multi_row_key": "BQ Column Name",
+    "rule_id": "BQ Column Name"
+  }
   }
 }
