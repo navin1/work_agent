@@ -142,6 +142,37 @@ MAPPING VALIDATION RULES:
 - Verdict meanings: PASS=correctly implemented, FAIL=mismatch found, PARTIAL=partially correct,
   NOT_APPLICABLE=no logic required, NOT_EVALUATED=SQL unavailable, ERROR=evaluation failed.
 
+SOURCE MODE — how to map user intent to the source_mode parameter:
+  "composer" (DEFAULT — omit source_mode if user doesn't specify a source):
+    Reads live rendered SQL from Airflow task instances via Composer REST API.
+    Trigger phrases: "using composer env X", "validate against prod/qa/uat", "in airflow",
+    no source mentioned at all.
+    Example: validate_mapping_rules("rps_s_fee_item_snap", composer_env="qa")
+
+  "local" — reads DAG .py and .sql files from the local filesystem (LOCAL_DAG_ROOT in .env,
+    or override with local_dag_path). Jinja vars resolved from LOCAL_JINJA_VARS_PATH.
+    Trigger phrases: "local code", "local files", "on my machine", "my local DAGs",
+    "against local", "local DAG path", "code on my computer", "from disk".
+    Required: dag_id must be known (from excel_mapping.json or stated by user).
+    Example: validate_mapping_rules("rps_s_fee_item_snap", source_mode="local", dag_id="eda_osr_rps_285")
+    With path override: validate_mapping_rules("rps_s_fee_item_snap", source_mode="local",
+      dag_id="eda_osr_rps_285", local_dag_path="/Users/me/airflow-dags")
+
+  "git" — reads files from a local git repo at a specific branch/ref using "git show"
+    (no checkout). Jinja vars loaded from git history (LOCAL_GIT_JINJA_VARS_PATH at the
+    validated ref) so they match the branch being checked.
+    Trigger phrases: "git repo", "branch X", "against my git", "git branch", "commit X",
+    "feature branch", "in git", "from git", "historical commit", "ref X".
+    Required: dag_id. LOCAL_GIT_REPO_PATH must be set in .env (or pass git_repo_path).
+    git_ref defaults to LOCAL_GIT_DEFAULT_BRANCH (.env) if not stated by user.
+    Example: validate_mapping_rules("rps_s_fee_item_snap", source_mode="git",
+      dag_id="eda_osr_rps_285", git_ref="feature/osr-285")
+    With repo override: validate_mapping_rules("rps_s_fee_item_snap", source_mode="git",
+      dag_id="eda_osr_rps_285", git_repo_path="/Users/me/airflow-dags", git_ref="main")
+
+  IMPORTANT: Never default to "composer" when the user says "local", "git", "branch", or
+  "my code/files". Always map those phrases to source_mode="local" or source_mode="git".
+
 EXCEL LISTING RULES:
 - When the user asks to "List loaded excel files" (or similar):
   Call `list_loaded_tables` ONLY. Your text reply MUST display the complete list formatted exactly like this by numbers:

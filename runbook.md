@@ -39,22 +39,70 @@ Ask questions in plain English. The agent plans, calls the right tools, and retu
 
 ### Mapping Validation
 
-Validates that every transformation rule in an Excel mapping sheet is correctly implemented in the DAG's SQL. Works even when logic is written in plain English.
+Validates that every transformation rule in an Excel mapping sheet is correctly implemented in the DAG's SQL. Works even when logic is written in plain English. Supports three SQL source modes: live Airflow (Composer), local files on disk, or a local git repo at any branch/commit.
 
 | Example | What it does |
 |---|---|
-| `Validate mapping rules for rps800_reconciliation` | Full rule-by-rule validation against rendered DAG SQL |
+| `Validate mapping rules for rps800_reconciliation` | Full rule-by-rule validation against rendered DAG SQL (Composer, default) |
 | `Validate rps800_reconciliation in prod` | Same, scoped to a specific Composer environment |
 | `Validate rps800_reconciliation task load_employees` | Validate against one specific task's SQL only |
 | `Validate rps800_reconciliation for target column net_salary` | Narrow to one column |
 | `Re-validate rps800_reconciliation` | Force-refresh (bypass cache, re-run all LLM evaluations) |
+| `Validate rps800_reconciliation using local DAGs at /Users/me/dags` | Validate against DAG files on the local filesystem |
+| `Validate rps800_reconciliation against local code` | Uses `LOCAL_DAG_ROOT` from `.env` |
+| `Validate rps800_reconciliation using git repo /Users/me/dags branch main` | Validate against a specific git branch |
+| `Validate rps800_reconciliation against git branch feature/rps800-v2` | Uses `LOCAL_GIT_REPO_PATH` from `.env` |
+
+**Source modes** (`source_mode` parameter):
+
+| Mode | SQL source | Jinja resolution | When to use |
+|---|---|---|---|
+| `composer` *(default)* | Live Airflow rendered task instances via Composer REST API | Rendered by Airflow — already resolved | Validating what is currently deployed |
+| `local` | DAG `.py` and `.sql` files on disk under `LOCAL_DAG_ROOT` | Resolved using `LOCAL_JINJA_VARS_PATH` JSON | Validating local development code before deployment |
+| `git` | Files read from a local git repo via `git show <ref>:<file>` (no checkout) | Resolved using `LOCAL_GIT_JINJA_VARS_PATH` in git history, fallback to `LOCAL_JINJA_VARS_PATH` | Validating a specific branch, tag, or historical commit |
 
 **How it works:**
 1. Extracts transformation rules from the Excel file in DuckDB
 2. Auto-detects which columns hold target, source, and logic (or reads from `excel_mapping.json`)
-3. Strips Jinja2 templates, deconstructs DAG SQL into CTEs / JOINs / WHERE / GROUP BY / aggregations using sqlglot
-4. Two-step LLM evaluation per rule: Step A identifies the relevant SQL clause(s); Step B verifies whether the rule is implemented correctly
-5. Results are cached (keyed by content hash) — subsequent calls are instant unless SQL or rules change
+3. Fetches SQL based on `source_mode` — Composer API, local filesystem scan, or `git show`
+4. Resolves Jinja2 templates using the configured variable map (Jinja2 engine with Airflow mock context: `macros.ds_add`, `execution_date`, `params`, `ds`, `next_ds`, etc.); unknown variables become `'__JINJA__'`
+5. Deconstructs SQL into CTEs / JOINs / WHERE / GROUP BY / aggregations using sqlglot
+6. Single LLM batch call evaluates all rules at once against the deconstructed SQL
+7. Results are cached (keyed by content hash of rules + SQL) — subsequent calls are instant unless SQL or rules change
+
+**Jinja variable substitution file** (`LOCAL_JINJA_VARS_PATH`):
+
+Create a JSON file with the variable values your DAGs use. Bare names and Airflow-prefixed names both work — the agent strips `params.`, `var.value.`, `macros.`, `dag.`, `ti.`, `task.` before matching.
+
+```json
+{
+  "ds": "2024-01-01",
+  "env": "prod",
+  "params.project": "my-gcp-project",
+  "params.dataset": "raw_cust",
+  "params.table_suffix": "_v2",
+  "run_id": "scheduled__2024-01-01"
+}
+```
+
+Complex expressions are evaluated by the Jinja2 engine using a mock Airflow context:
+- `{{ macros.ds_add(ds, 7) }}` → `"2024-01-08"`
+- `{{ execution_date.strftime('%Y') }}` → `"2024"` *(derived from `ds`)*
+- `{{ params.project }}` → `"my-gcp-project"`
+- `{% if env == 'prod' %}...{% endif %}` → evaluated with `env` value
+- Any unknown variable → `'__JINJA__'` *(SQL-safe placeholder; LLM is instructed not to flag these)*
+
+For `source_mode=git`, set `LOCAL_GIT_JINJA_VARS_PATH` to the **repo-relative** path of the file (e.g. `config/jinja_vars.json`). The agent reads it from git history at the validated ref so the vars match the branch being checked — not the host filesystem state.
+
+**Required `.env` vars for local / git mode:**
+
+| Variable | Mode | Purpose |
+|---|---|---|
+| `LOCAL_DAG_ROOT` | `local` | Root folder containing DAG `.py` / `.sql` files (subfolders scanned) |
+| `LOCAL_JINJA_VARS_PATH` | `local`, `git` (fallback) | Absolute path to the Jinja vars JSON file on disk |
+| `LOCAL_GIT_REPO_PATH` | `git` | Path to a locally-cloned git repository root |
+| `LOCAL_GIT_DEFAULT_BRANCH` | `git` | Default branch/ref when none is stated in the prompt (default: `main`) |
+| `LOCAL_GIT_JINJA_VARS_PATH` | `git` | Repo-relative path to Jinja vars JSON inside the repo (read from git history) |
 
 **Verdicts:**
 
@@ -64,7 +112,7 @@ Validates that every transformation rule in an Excel mapping sheet is correctly 
 | 🔴 FAIL | Mismatch found (wrong JOIN type, missing filter, wrong aggregation, etc.) |
 | 🟡 PARTIAL | Partially implemented — some conditions satisfied, others missing |
 | ⚪ N/A | Rule text indicates no SQL transformation required |
-| 🔵 No SQL | SQL unavailable (Composer not configured or DAG not found) |
+| 🔵 No SQL | SQL unavailable (source not configured or DAG not found) |
 | ⚠️ ERROR | Evaluation failed — see Raw tab for detail |
 
 **Confidence tiers** (assigned by rule type, not by LLM):
@@ -281,8 +329,10 @@ tools/
   code_tools.py               ← read_file, compare_git_gcs, optimise_file/folder
   composer_tools.py           ← 12 Airflow tools: DAGs, runs, tasks, SQL, logs
   excel_tools.py              ← DuckDB ingest, query, registry, lineage trace
-  mapping_validation_tools.py ← validate_mapping_rules: rule extraction → sqlglot
-                                deconstruction → two-step LLM evaluation →
+  mapping_validation_tools.py ← validate_mapping_rules: rule extraction → SQL fetch
+                                (composer API / local filesystem / git show) →
+                                Jinja2 resolution (Airflow mock context) →
+                                sqlglot deconstruction → LLM batch evaluation →
                                 L1+L2 verdict cache
   optimizer_tools.py          ← SQL flags, optimise_sql, optimise_dag, optimise_all
   reconciliation_tools.py     ← Three-way Git/GCS/mapping reconciliation
@@ -290,7 +340,9 @@ tools/
   testing_tools.py            ← compare_query_outputs, validate_optimisation
   user_tools.py               ← Saved queries, glossary, workspace pin, favorites
 core/
-  config.py                   ← All env vars and constants
+  config.py                   ← All env vars and constants (incl. LOCAL_DAG_ROOT,
+                                LOCAL_JINJA_VARS_PATH, LOCAL_GIT_REPO_PATH,
+                                LOCAL_GIT_DEFAULT_BRANCH, LOCAL_GIT_JINJA_VARS_PATH)
   auth.py                     ← GCP credential provider
   persistence.py              ← JSON-backed store: registry, glossary, saved queries,
                                 validation_cache (L2 verdict store, max 1 000 entries)

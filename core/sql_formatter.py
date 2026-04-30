@@ -9,7 +9,7 @@ except ImportError:
 	_HAS_SQLGLOT = False
 
 # Scoping constants
-MAX_FORMAT_SIZE = 300000  # Characters
+MAX_FORMAT_SIZE = 300000  # Characters
 _SQL_RE = re.compile(r'\b(SELECT|WITH|INSERT|MERGE|UPDATE|DELETE|CREATE|DECLARE|SET|BEGIN|EXCEPTION)\b', re.IGNORECASE)
 
 
@@ -26,9 +26,9 @@ def extract_sql(obj, _depth: int = 0) -> str | None:
 	"""Recursively extract SQL from an Airflow renderedFields / task-definition dict.
 
 	Priority:
-	  1. Top-level keys: sql, query, bql
-	  2. BigQueryInsertJobOperator nesting: configuration.query.query
-	  3. Any string value containing a SQL keyword (len > 20)
+	  1. Top-level keys: sql, query, bql
+	  2. BigQueryInsertJobOperator nesting: configuration.query.query
+	  3. Any string value containing a SQL keyword (len > 20)
 	"""
 	if _depth > 6:
 		return None
@@ -71,10 +71,10 @@ def format_sql(sql: str, dialect: str = "bigquery") -> str:
 	# Phase 1: Deep Sanitization & Standardization
 	# Convert escaped chars, standardize tabs to 4 spaces, remove carriage returns
 	raw_sql = (sql.replace("\\n", "\n")
-				  .replace("\r", "")
-				  .replace("\t", "	")
-				  .replace("\xa0", " ")
-				  .replace("\\xa0", " "))
+				  .replace("\r", "")
+				  .replace("\t", "	")
+				  .replace("\xa0", " ")
+				  .replace("\\xa0", " "))
 
 	# Logic Gate: Skip formatting if script is massive or library missing
 	if not _HAS_SQLGLOT or len(raw_sql) > MAX_FORMAT_SIZE:

@@ -46,6 +46,23 @@ GCS_FILE_EXTENSIONS: list[str] = [
 # Comma-separated. Falls back to GCS_PREFIXES if not set.
 DAG_FOLDER: str = os.getenv("DAG_FOLDER", "")
 
+# Local code validation — mapping rule validation against local filesystem or a local git repo.
+# LOCAL_DAG_ROOT: root directory containing DAG .py and/or .sql files (subfolders are scanned).
+# LOCAL_JINJA_VARS_PATH: path to a JSON file mapping Jinja variable names → substitution values.
+#   Format: {"key_1": "value_1", "ds": "2024-01-01", "params.project": "my-project"}
+#   Airflow prefixes (params., var.value., macros.) are stripped when matching keys.
+# LOCAL_GIT_REPO_PATH: path to a local git repository root used in "git" source mode.
+# LOCAL_GIT_DEFAULT_BRANCH: default branch/ref for git mode (default: main).
+LOCAL_DAG_ROOT: str           = os.getenv("LOCAL_DAG_ROOT", "")
+LOCAL_JINJA_VARS_PATH: str    = os.getenv("LOCAL_JINJA_VARS_PATH", "")
+LOCAL_GIT_REPO_PATH: str      = os.getenv("LOCAL_GIT_REPO_PATH", "")
+LOCAL_GIT_DEFAULT_BRANCH: str = os.getenv("LOCAL_GIT_DEFAULT_BRANCH", "main")
+# Path within the git repo (repo-relative) to the Jinja vars JSON file.
+# When set, git mode reads this file from the git object store at the validated ref
+# instead of the host filesystem — ensures vars match the branch being checked.
+# Example: config/jinja_vars.json  (relative to repo root)
+LOCAL_GIT_JINJA_VARS_PATH: str = os.getenv("LOCAL_GIT_JINJA_VARS_PATH", "")
+
 # Schema Audit — MySQL-to-BigQuery reconciliation
 SCHEMA_METADATA_PROJECT: str = os.getenv("SCHEMA_METADATA_PROJECT", "")
 SCHEMA_BQ_PROJECT_PROD: str  = os.getenv("SCHEMA_BQ_PROJECT_PROD", "")

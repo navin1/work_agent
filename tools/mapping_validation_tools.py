@@ -348,7 +348,7 @@ def _save_verdict(key: str, result: dict) -> None:
 
 # ── Bulk LLM evaluation ───────────────────────────────────────────────────────
 
-def _evaluate_rules_bulk(rules: list[dict], structure: dict, force_refresh: bool) -> dict:
+def _evaluate_rules_bulk(rules: list[dict], structure: dict, force_refresh: bool, sql_note: str = "") -> dict:
 	"""Single-pass batched LLM evaluation for all rules at once."""
 	if not rules:
 		return {}
@@ -388,9 +388,11 @@ def _evaluate_rules_bulk(rules: list[dict], structure: dict, force_refresh: bool
 			# Map cached list back to a dict keyed by rule_id
 			return {r["rule_id"]: {**r, "cache_hit": True} for r in cached.get("results", [])}
 
+	note_section = f"NOTE: {sql_note}\n\n" if sql_note else ""
 	prompt = (
 		"You are a Data QA Engineer. Below is a complete SQL script and a list of business rules "
 		"from an Excel mapping document. Your task is to validate every single rule against the SQL.\n\n"
+		f"{note_section}"
 		"FULL SQL SCRIPT:\n"
 		"```sql\n"
 		f"{raw_sql}\n"
@@ -493,7 +495,411 @@ def _fetch_all_task_sqls(composer_env: str, dag_id: str) -> dict[str, str]:
 		return {}
 
 
-def _do_validate_mapping(mapping_file_name: str, composer_env: str = None, dag_id: str = None, task_id: str = None, target_column_filter: str = None, force_refresh: bool = False) -> dict:
+# ── Jinja resolution ──────────────────────────────────────────────────────────
+
+def _load_jinja_vars() -> dict:
+    """Load Jinja substitution map from LOCAL_JINJA_VARS_PATH. Returns {} on any failure."""
+    path = config.LOCAL_JINJA_VARS_PATH
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def _load_jinja_vars_for_git(repo_path: str, ref: str) -> dict:
+    """Load Jinja vars for git mode.
+
+    If LOCAL_GIT_JINJA_VARS_PATH is set (repo-relative path), reads the JSON from
+    the git object store at the given ref via 'git show <ref>:<path>' — so the vars
+    match the branch/commit being validated, not the host filesystem state.
+    Falls back to LOCAL_JINJA_VARS_PATH (filesystem) on any failure or if not set.
+    """
+    import subprocess
+
+    git_vars_path = config.LOCAL_GIT_JINJA_VARS_PATH
+    if git_vars_path:
+        try:
+            result = subprocess.run(
+                ["git", "-C", repo_path, "show", f"{ref}:{git_vars_path}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return json.loads(result.stdout)
+        except Exception:
+            pass
+
+    return _load_jinja_vars()
+
+
+def _resolve_jinja(sql: str, vars: dict) -> str:
+    """Render Jinja2 expressions in SQL using vars + a mock Airflow context.
+
+    Handles: variable substitution, filters (ds_add, ds_format), method calls on
+    datetime objects (strftime), conditional {% if %} blocks, and params.x notation.
+    Unknown variables / filters silently become the SQL-safe string '__JINJA__'.
+    Falls back to regex strip_jinja() if Jinja2 rendering raises an exception.
+    """
+    if not vars:
+        return strip_jinja(sql)
+
+    try:
+        import datetime as _dt
+        from jinja2 import Environment, Undefined
+
+        class _Silent(Undefined):
+            """Silently absorbs unknown variable access, attribute chaining, and calls."""
+            def __str__(self) -> str:
+                return "'__JINJA__'"
+
+            def __iter__(self):
+                return iter([])
+
+            def __bool__(self) -> bool:
+                return False
+
+            def __call__(self, *args, **kwargs):
+                return _Silent(name="unknown")
+
+            def __getattr__(self, name: str):
+                # Guard: let Python/Jinja2 resolve private/dunder attrs normally
+                if name.startswith("_"):
+                    raise AttributeError(name)
+                return _Silent(name=name)
+
+        class _MockObj:
+            """Proxy for Airflow context objects (ti, task, dag) — absorbs any access."""
+            def __getattr__(self, _): return _MockObj()
+            def __call__(self, *a, **kw): return "'__JINJA__'"
+            def __str__(self): return "'__JINJA__'"
+
+        # ── Build Jinja context ───────────────────────────────────────────────
+        context: dict = {}
+        params: dict = {}
+
+        for k, v in vars.items():
+            context[k] = v
+            # Expose params.x as both context["params"]["x"] and context["params.x"]
+            if k.startswith("params."):
+                params[k[7:]] = v
+
+        context.setdefault("params", params)
+
+        # Derive execution date from "ds" key if available
+        ds_raw = vars.get("ds", "")
+        try:
+            exec_dt = _dt.datetime.strptime(ds_raw, "%Y-%m-%d") if ds_raw else _dt.datetime.now()
+        except ValueError:
+            exec_dt = _dt.datetime.now()
+
+        context.setdefault("ds",                exec_dt.strftime("%Y-%m-%d"))
+        context.setdefault("ds_nodash",         exec_dt.strftime("%Y%m%d"))
+        context.setdefault("execution_date",    exec_dt)
+        context.setdefault("next_execution_date", exec_dt + _dt.timedelta(days=1))
+        context.setdefault("prev_execution_date", exec_dt - _dt.timedelta(days=1))
+        context.setdefault("next_ds",           (exec_dt + _dt.timedelta(days=1)).strftime("%Y-%m-%d"))
+        context.setdefault("prev_ds",           (exec_dt - _dt.timedelta(days=1)).strftime("%Y-%m-%d"))
+        context.setdefault("tomorrow_ds",       (exec_dt + _dt.timedelta(days=1)).strftime("%Y-%m-%d"))
+        context.setdefault("yesterday_ds",      (exec_dt - _dt.timedelta(days=1)).strftime("%Y-%m-%d"))
+
+        # Mock Airflow macros (most common functions used in DAG SQL templates)
+        class _Macros:
+            @staticmethod
+            def ds_add(ds_str: str, days: int) -> str:
+                try:
+                    return (
+                        _dt.datetime.strptime(str(ds_str), "%Y-%m-%d")
+                        + _dt.timedelta(days=int(days))
+                    ).strftime("%Y-%m-%d")
+                except Exception:
+                    return str(ds_str)
+
+            @staticmethod
+            def ds_format(ds_str: str, input_fmt: str, output_fmt: str) -> str:
+                try:
+                    return _dt.datetime.strptime(str(ds_str), input_fmt).strftime(output_fmt)
+                except Exception:
+                    return str(ds_str)
+
+            @staticmethod
+            def datetime(y: int, m: int, d: int, *args) -> _dt.datetime:
+                try:
+                    return _dt.datetime(int(y), int(m), int(d), *[int(a) for a in args])
+                except Exception:
+                    return exec_dt
+
+        context.setdefault("macros", _Macros())
+        context.setdefault("var",    {"value": {}, "json": {}})
+        context.setdefault("ti",     _MockObj())
+        context.setdefault("task",   _MockObj())
+        context.setdefault("dag",    _MockObj())
+        context.setdefault("run_id", vars.get("run_id", "__JINJA__"))
+
+        env = Environment(undefined=_Silent)
+        return env.from_string(sql).render(**context)
+
+    except Exception:
+        return strip_jinja(sql)
+
+
+# ── Local / Git SQL extraction ────────────────────────────────────────────────
+
+_SQL_KEYWORD_RE = re.compile(
+    r"\b(SELECT|WITH|INSERT|MERGE|UPDATE|DELETE|CREATE|DECLARE)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_sql(text: str) -> bool:
+    return bool(text and len(text.strip()) > 40 and _SQL_KEYWORD_RE.search(text))
+
+
+def _extract_sql_from_python(
+    source: str,
+    file_dir: "Path",
+    task_filter: str | None,
+) -> "dict[str, str]":
+    """Return {task_id: sql_text} extracted from a Python DAG source file.
+
+    Strategy 1 — AST walk: finds BigQueryOperator / BigQueryInsertJobOperator calls,
+    resolves sql= string literals, variable references, and .sql file paths.
+    Strategy 2 — regex fallback: triple-quoted strings containing SQL keywords.
+    """
+    import ast
+
+    results: dict[str, str] = {}
+
+    try:
+        tree = ast.parse(source)
+
+        # Build module-level variable map to resolve sql=VARIABLE references
+        var_map: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                var_map[node.targets[0].id] = node.value.value
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+
+            tid: str | None = None
+            sql_val: str | None = None
+
+            for kw in node.keywords:
+                if kw.arg == "task_id" and isinstance(kw.value, ast.Constant):
+                    tid = str(kw.value.value)
+
+                if kw.arg in ("sql", "bql"):
+                    if isinstance(kw.value, ast.Constant):
+                        sql_val = str(kw.value.value)
+                    elif isinstance(kw.value, ast.Name) and kw.value.id in var_map:
+                        sql_val = var_map[kw.value.id]
+
+                # BigQueryInsertJobOperator: configuration={'query': {'query': '...'}}
+                if kw.arg == "configuration" and isinstance(kw.value, ast.Dict):
+                    try:
+                        cfg = ast.literal_eval(kw.value)
+                        from core.sql_formatter import extract_sql as _exsql
+                        extracted = _exsql(cfg)
+                        if extracted:
+                            sql_val = sql_val or extracted
+                    except Exception:
+                        pass
+
+            if sql_val and isinstance(sql_val, str):
+                stripped = sql_val.strip()
+                # Resolve .sql file path reference
+                if stripped.endswith(".sql"):
+                    candidate = (file_dir / stripped.lstrip("/")).resolve()
+                    if candidate.is_file():
+                        sql_val = candidate.read_text(encoding="utf-8", errors="replace")
+                    else:
+                        sql_val = None
+
+                if sql_val and _looks_like_sql(sql_val):
+                    if task_filter is None or tid == task_filter:
+                        key = tid or f"inline_{len(results)}"
+                        results.setdefault(key, sql_val)
+
+    except SyntaxError:
+        pass
+    except Exception:
+        pass
+
+    # Regex fallback for triple-quoted SQL strings
+    if not results:
+        for m in re.finditer(r'(?:"""|\'\'\')([\s\S]*?)(?:"""|\'\'\')' , source):
+            s = m.group(1).strip()
+            if _looks_like_sql(s):
+                results[f"sql_{len(results)}"] = s
+
+    return results
+
+
+def _find_dag_files(root: "Path", dag_id: str) -> "list[Path]":
+    """Find .py and .sql files under root likely related to dag_id.
+
+    Priority:
+    1. Name match via rglob — instant, zero I/O.
+    2. OS grep -r -l  — single subprocess call, uses OS-level buffered I/O; orders of
+       magnitude faster than reading files one-by-one in Python on large repos.
+    """
+    import subprocess
+
+    dag_slug = dag_id.lower().replace("-", "_")
+    candidates: list[Path] = []
+
+    # Step 1: filename match (fast, no file I/O)
+    for ext in (".py", ".sql"):
+        for p in root.rglob(f"*{ext}"):
+            if dag_slug in p.stem.lower() or dag_id.lower() in p.stem.lower():
+                candidates.append(p)
+
+    if candidates:
+        return candidates
+
+    # Step 2: OS grep — searches all .py files in one subprocess call
+    try:
+        result = subprocess.run(
+            ["grep", "-r", "-l", "--include=*.py", dag_id, str(root)],
+            capture_output=True, text=True, timeout=30,
+        )
+        for line in result.stdout.strip().splitlines():
+            p = Path(line.strip())
+            if p.is_file():
+                candidates.append(p)
+    except Exception:
+        pass
+
+    return candidates
+
+
+def _fetch_sql_local(
+    dag_id: str,
+    local_dag_root: str,
+    task_filter: str | None,
+    jinja_vars: dict,
+) -> "dict[str, str]":
+    """Scan local filesystem for DAG / SQL files and return Jinja-resolved SQL per task."""
+    from core.sql_formatter import format_sql
+
+    root = Path(local_dag_root)
+    if not root.is_dir():
+        return {}
+
+    results: dict[str, str] = {}
+    for fpath in _find_dag_files(root, dag_id):
+        try:
+            source = fpath.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+
+        if fpath.suffix == ".sql":
+            if task_filter is None or fpath.stem == task_filter:
+                results[fpath.stem] = format_sql(_resolve_jinja(source, jinja_vars))
+        else:
+            for tid, raw in _extract_sql_from_python(source, fpath.parent, task_filter).items():
+                results[tid] = format_sql(_resolve_jinja(raw, jinja_vars))
+
+    return results
+
+
+def _fetch_sql_git(
+    dag_id: str,
+    git_repo_path: str,
+    git_ref: str,
+    task_filter: str | None,
+) -> "dict[str, str]":
+    """Read DAG / SQL files from a local git repo at a specific ref using 'git show'.
+    No checkout required — reads file content directly from git object store.
+    Jinja vars are loaded from git history (LOCAL_GIT_JINJA_VARS_PATH at the same ref)
+    so they match the branch/commit being validated."""
+    import subprocess
+    from core.sql_formatter import format_sql
+
+    repo = Path(git_repo_path)
+    if not repo.is_dir():
+        return {}
+
+    ref = git_ref or "HEAD"
+    dag_slug = dag_id.lower().replace("-", "_")
+    results: dict[str, str] = {}
+
+    # Load Jinja vars from git history at this ref (not from host filesystem)
+    resolved_vars = _load_jinja_vars_for_git(str(repo), ref)
+
+    # ── Candidate file discovery ──────────────────────────────────────────────
+    # Step 1: name-match via ls-tree (zero I/O, instant)
+    try:
+        ls = subprocess.run(
+            ["git", "-C", str(repo), "ls-tree", "-r", "--name-only", ref],
+            capture_output=True, text=True, timeout=30,
+        )
+        all_files = ls.stdout.strip().splitlines()
+    except Exception:
+        return {}
+
+    candidate_paths = [
+        f for f in all_files
+        if Path(f).suffix in (".py", ".sql")
+        and (dag_slug in Path(f).stem.lower() or dag_id.lower() in Path(f).stem.lower())
+    ]
+
+    # Step 2: git grep fallback — searches git index, no per-file I/O
+    if not candidate_paths:
+        try:
+            grep = subprocess.run(
+                ["git", "-C", str(repo), "grep", "-l", dag_id, ref, "--", "*.py"],
+                capture_output=True, text=True, timeout=20,
+            )
+            # Output format: "<ref>:<filepath>" per line
+            for line in grep.stdout.strip().splitlines():
+                fpath = line.split(":", 1)[-1].strip()
+                if fpath and Path(fpath).suffix == ".py":
+                    candidate_paths.append(fpath)
+        except Exception:
+            pass
+
+    for git_path in candidate_paths:
+        try:
+            content = subprocess.run(
+                ["git", "-C", str(repo), "show", f"{ref}:{git_path}"],
+                capture_output=True, text=True, timeout=30,
+            ).stdout
+        except Exception:
+            continue
+
+        fpath = Path(git_path)
+        if fpath.suffix == ".sql":
+            if task_filter is None or fpath.stem == task_filter:
+                results[fpath.stem] = format_sql(_resolve_jinja(content, resolved_vars))
+        else:
+            for tid, raw in _extract_sql_from_python(content, repo / fpath.parent, task_filter).items():
+                results[tid] = format_sql(_resolve_jinja(raw, resolved_vars))
+
+    return results
+
+
+def _do_validate_mapping(
+	mapping_file_name: str,
+	composer_env: str = None,
+	dag_id: str = None,
+	task_id: str = None,
+	target_column_filter: str = None,
+	force_refresh: bool = False,
+	source_mode: str = "composer",
+	local_dag_path: str = None,
+	git_repo_path: str = None,
+	git_ref: str = None,
+) -> dict:
 	start = time.time()
 	try:
 		# ── Resolve mapping file in registry ─────────────────────────────────
@@ -656,56 +1062,92 @@ def _do_validate_mapping(mapping_file_name: str, composer_env: str = None, dag_i
 				rule["confidence_tier"] = conf
 				rule["_na"] = False
 
-		# ── Fetch SQL from DAG tasks ───────────────────────────────────────────
+		# ── Fetch SQL — branched on source_mode ──────────────────────────────────
 		task_sqls: dict[str, str] = {}
 		sql_fetch_error: str | None = None
 		tasks_evaluated: list[str] = []
 
-		if resolved_env and resolved_dag_id:
-			try:
-				if task_id:
-					from tools.composer_tools import (
-						_get, _enc, _best_sql, _extract_rendered_sql,
-						_rendered_was_truncated, _get_sql_file_path, _fetch_sql_file,
-					)
-					from core.sql_formatter import extract_sql, format_sql
+		if source_mode == "local":
+			local_root = local_dag_path or config.LOCAL_DAG_ROOT
+			if not resolved_dag_id:
+				sql_fetch_error = "dag_id is required for source_mode=local."
+			elif not local_root:
+				sql_fetch_error = "LOCAL_DAG_ROOT is not set in .env and local_dag_path was not provided."
+			else:
+				try:
+					jinja_vars = _load_jinja_vars()
+					task_sqls = _fetch_sql_local(resolved_dag_id, local_root, task_id, jinja_vars)
+					tasks_evaluated = list(task_sqls.keys())
+				except Exception as exc:
+					sql_fetch_error = str(exc)
 
-					task_data = _get(resolved_env, f"/dags/{_enc(resolved_dag_id)}/tasks/{_enc(task_id)}")
-					sql_file = _get_sql_file_path(task_data)
-					raw_sql  = _fetch_sql_file(sql_file) if sql_file else None
-					if not raw_sql:
-						raw_sql = extract_sql(task_data)
+		elif source_mode == "git":
+			git_root = git_repo_path or config.LOCAL_GIT_REPO_PATH
+			ref = git_ref or config.LOCAL_GIT_DEFAULT_BRANCH
+			if not resolved_dag_id:
+				sql_fetch_error = "dag_id is required for source_mode=git."
+			elif not git_root:
+				sql_fetch_error = "LOCAL_GIT_REPO_PATH is not set in .env and git_repo_path was not provided."
+			else:
+				try:
+					task_sqls = _fetch_sql_git(resolved_dag_id, git_root, ref, task_id)
+					tasks_evaluated = list(task_sqls.keys())
+				except Exception as exc:
+					sql_fetch_error = str(exc)
 
-					runs = _get(
-						resolved_env,
-						f"/dags/{_enc(resolved_dag_id)}/dagRuns",
-						{"limit": 10, "order_by": "-execution_date", "state": "success"},
-					)
-					rendered_sql = None
-					rendered_truncated = False
-					for run in runs.get("dag_runs", []):
-						try:
-							ti = _get(
-								resolved_env,
-								f"/dags/{_enc(resolved_dag_id)}/dagRuns"
-								f"/{_enc(run['dag_run_id'])}/taskInstances/{_enc(task_id)}",
-							)
-							rendered_sql	  = _extract_rendered_sql(ti)
-							rendered_truncated = _rendered_was_truncated(ti)
-							if rendered_sql:
-								break
-						except Exception:
-							continue
+		else:  # composer (original behaviour)
+			if resolved_env and resolved_dag_id:
+				try:
+					if task_id:
+						from tools.composer_tools import (
+							_get, _enc, _best_sql, _extract_rendered_sql,
+							_rendered_was_truncated, _get_sql_file_path, _fetch_sql_file,
+						)
+						from core.sql_formatter import extract_sql, format_sql
 
-					best = _best_sql(raw_sql, rendered_sql, rendered_truncated)
-					if best:
-						task_sqls[task_id] = format_sql(best)
-				else:
-					task_sqls = _fetch_all_task_sqls(resolved_env, resolved_dag_id)
+						task_data = _get(resolved_env, f"/dags/{_enc(resolved_dag_id)}/tasks/{_enc(task_id)}")
+						sql_file = _get_sql_file_path(task_data)
+						raw_sql  = _fetch_sql_file(sql_file) if sql_file else None
+						if not raw_sql:
+							raw_sql = extract_sql(task_data)
 
-				tasks_evaluated = list(task_sqls.keys())
-			except Exception as exc:
-				sql_fetch_error = str(exc)
+						runs = _get(
+							resolved_env,
+							f"/dags/{_enc(resolved_dag_id)}/dagRuns",
+							{"limit": 10, "order_by": "-execution_date", "state": "success"},
+						)
+						rendered_sql = None
+						rendered_truncated = False
+						for run in runs.get("dag_runs", []):
+							try:
+								ti = _get(
+									resolved_env,
+									f"/dags/{_enc(resolved_dag_id)}/dagRuns"
+									f"/{_enc(run['dag_run_id'])}/taskInstances/{_enc(task_id)}",
+								)
+								rendered_sql	  = _extract_rendered_sql(ti)
+								rendered_truncated = _rendered_was_truncated(ti)
+								if rendered_sql:
+									break
+							except Exception:
+								continue
+
+						best = _best_sql(raw_sql, rendered_sql, rendered_truncated)
+						if best:
+							task_sqls[task_id] = format_sql(best)
+					else:
+						task_sqls = _fetch_all_task_sqls(resolved_env, resolved_dag_id)
+
+					tasks_evaluated = list(task_sqls.keys())
+				except Exception as exc:
+					sql_fetch_error = str(exc)
+
+		sql_note = (
+			"Jinja template expressions have been pre-resolved using configured variable values "
+			"(LOCAL_JINJA_VARS_PATH). Unknown Jinja expressions are replaced with the "
+			"placeholder '__JINJA__' — do not flag these as mismatches."
+			if source_mode != "composer" else ""
+		)
 
 		# ── Deconstruct SQL per task, then merge ──────────────────────────────
 		structures: dict[str, dict] = {tid: _deconstruct_sql(sql) for tid, sql in task_sqls.items()}
@@ -752,7 +1194,7 @@ def _do_validate_mapping(mapping_file_name: str, composer_env: str = None, dag_i
 			# --- BULK EVALUATION EXECUTION ---
 			bulk_verdicts = {}
 			if has_sql:
-				 bulk_verdicts = _evaluate_rules_bulk(group_rules, structure, force_refresh)
+				 bulk_verdicts = _evaluate_rules_bulk(group_rules, structure, force_refresh, sql_note)
 
 			for rule in group_rules:
 				summary["total"] += 1
@@ -818,7 +1260,8 @@ def _do_validate_mapping(mapping_file_name: str, composer_env: str = None, dag_i
 			"mapping_file": mapping_file_name,
 			"duckdb_table": table_name,
 			"dag_id":		resolved_dag_id,
-			"composer_env": resolved_env,
+			"source_mode":  source_mode,
+			"composer_env": resolved_env if source_mode == "composer" else None,
 			"column_config": col_config,
 			"summary":	  summary,
 			"bq_table_groups": output_groups,
@@ -855,24 +1298,40 @@ def validate_mapping_rules(
 	task_id: str = None,
 	target_column_filter: str = None,
 	force_refresh: bool = False,
+	source_mode: str = "composer",
+	local_dag_path: str = None,
+	git_repo_path: str = None,
+	git_ref: str = None,
 ) -> str:
 	"""Validate Excel mapping transformation rules against BigQuery SQL implementation.
 
 	Extracts transformation rules from the Excel file in DuckDB, deconstructs the
-	DAG task SQL using sqlglot, then uses a two-step LLM evaluation to assess whether
-	each rule is correctly implemented. Groups results by BigQuery target table.
+	DAG task SQL using sqlglot, then uses an LLM to assess whether each rule is
+	correctly implemented. Groups results by BigQuery target table.
 
-	mapping_file_name: Excel file name (with or without .xlsx/.xls) or a comma separated list
-					  of file names, or a folder path to validate multiple files.
-	composer_env: Airflow/Composer env name; falls back to pinned workspace.
+	mapping_file_name: Excel file name (with or without .xlsx/.xls), comma-separated list,
+					  or folder pattern to validate multiple files.
+	composer_env: Airflow/Composer env alias; falls back to pinned workspace. Used when
+				  source_mode=composer (default).
 	dag_id: DAG to evaluate; falls back to excel_mapping.json lookup.
-	task_id: Specific task to evaluate; if None evaluates all tasks and merges structures.
+	task_id: Specific task to evaluate; if None, all tasks are evaluated and merged.
 	target_column_filter: Only validate rules whose target column contains this string.
 	force_refresh: Bypass in-session verdict cache (default False).
+	source_mode: Where to read SQL from. One of:
+	  "composer" (default) — live Airflow rendered SQL via Composer REST API.
+	  "local"   — DAG / SQL files on the local filesystem (uses LOCAL_DAG_ROOT from .env
+	              or local_dag_path argument). Jinja vars resolved from LOCAL_JINJA_VARS_PATH.
+	  "git"     — DAG / SQL files read from a local git repo at a specific ref using
+	              "git show" (uses LOCAL_GIT_REPO_PATH / LOCAL_GIT_DEFAULT_BRANCH from .env
+	              or git_repo_path / git_ref arguments). No checkout required.
+	local_dag_path: Override LOCAL_DAG_ROOT for this call (source_mode=local).
+	git_repo_path: Override LOCAL_GIT_REPO_PATH for this call (source_mode=git).
+	git_ref: Branch, tag, or commit SHA to read from (source_mode=git). Defaults to
+	         LOCAL_GIT_DEFAULT_BRANCH from .env (fallback: main).
 
-	Returns JSON with: column_config, summary (pass/fail/partial/not_applicable counts),
-	bq_table_groups (each group has a rules array with verdict/reason/evidence/flags),
-	and sql_structure metadata. Verdicts: PASS, FAIL, PARTIAL, NOT_APPLICABLE, NOT_EVALUATED, ERROR.
+	Returns JSON with: source_mode, column_config, summary (pass/fail/partial/not_applicable
+	counts), bq_table_groups (rules with verdict/reason/evidence/flags), sql_structure metadata.
+	Verdicts: PASS, FAIL, PARTIAL, NOT_APPLICABLE, NOT_EVALUATED, ERROR.
 	Confidence tiers: HIGH, MEDIUM, LOW (LOW requires human sign-off in the UI)."""
 	
 	# Check if this is a bulk operation (comma separated list or directory)
@@ -917,25 +1376,32 @@ def validate_mapping_rules(
 	if len(files_to_process) == 1:
 		# Single file flow
 		result = _do_validate_mapping(
-			Path(files_to_process[0]).name, 
-			composer_env, 
-			dag_id, 
-			task_id, 
-			target_column_filter, 
-			force_refresh
+			Path(files_to_process[0]).name,
+			composer_env,
+			dag_id,
+			task_id,
+			target_column_filter,
+			force_refresh,
+			source_mode,
+			local_dag_path,
+			git_repo_path,
+			git_ref,
 		)
 		return safe_json(result)
-		
+
 	# Bulk flow
 	bulk_results = []
 	overall_summary = {
 		"total": 0, "pass": 0, "fail": 0, "partial": 0,
 		"not_applicable": 0, "not_evaluated": 0, "error": 0, "low_confidence": 0,
 	}
-	
+
 	for f in files_to_process:
 		fname = Path(f).name
-		res = _do_validate_mapping(fname, composer_env, None, None, target_column_filter, force_refresh)
+		res = _do_validate_mapping(
+			fname, composer_env, None, None, target_column_filter, force_refresh,
+			source_mode, local_dag_path, git_repo_path, git_ref,
+		)
 		bulk_results.append(res)
 		
 		if "summary" in res:
