@@ -91,7 +91,7 @@ _MYSQL_TO_BQ: dict[str, str] = {
     "datetime": "DATETIME", "timestamp": "TIMESTAMP",
     "date": "DATE", "time": "TIME",
     "boolean": "BOOL", "bool": "BOOL", "bit": "BOOL",
-    "json": "JSON",
+    "json": "JSON", "enum": "STRING",
     "blob": "BYTES", "longblob": "BYTES", "mediumblob": "BYTES",
 }
 
@@ -99,7 +99,7 @@ _MYSQL_TO_BQ: dict[str, str] = {
 _BQ_ALIASES: dict[str, str] = {
     "INTEGER": "INT64", "INT": "INT64", "SMALLINT": "INT64",
     "BIGINT": "INT64", "BYTEINT": "INT64", "TINYINT": "INT64",
-    "FLOAT": "FLOAT64",
+    "FLOAT": "FLOAT64", "STRING": "JSON",
     "DECIMAL": "NUMERIC", "BIGDECIMAL": "NUMERIC", "BIGNUMERIC": "NUMERIC",
     "BOOLEAN": "BOOL",
 }
@@ -161,10 +161,11 @@ def _fetch_bq_schema(client, project: str, dataset: str, view: str) -> list[dict
         table_ref = client.get_table(full_ref)
         return [
             {
-                "column_name":    field.name,
+                "column_name":      field.name,
                 "ordinal_position": idx,
-                "data_type":      field.field_type,
-                "description":    field.description or "",
+                "data_type":        field.field_type,
+                "mode":             field.mode,
+                "description":      field.description or "",
             }
             for idx, field in enumerate(table_ref.schema, 1)
         ]
@@ -342,6 +343,84 @@ def _write_ddl_json(
     return output_file
 
 
+def _write_audit_json(
+    meta_df,
+    tables: list[dict],
+    bq_project: str,
+    file_suffix: str,
+    client,
+    output_dir: str,
+    timestamp: str,
+) -> str:
+    output_file = str(Path(output_dir) / f"schema_audit_{timestamp}_{file_suffix}.json")
+    audit: list[dict] = []
+
+    for tbl in tables:
+        name    = tbl["table_name"]
+        dataset = tbl["eda_dataset_name"]
+        view    = tbl["eda_view_name"]
+
+        mysql_rows = (
+            meta_df[meta_df["table_name"] == name][
+                ["column_name", "ordinal_position", "data_type"]
+            ].to_dict("records")
+        )
+        bq_rows = _fetch_bq_schema(client, bq_project, dataset, view)
+        rows    = _reconcile(mysql_rows, bq_rows)
+
+        table_exists = len(bq_rows) > 0
+        added: list[dict]      = []
+        removed: list[dict]    = []
+        mismatches: list[dict] = []
+
+        for row in rows:
+            status = row["Status"]
+            col    = row["Column Name"]
+            if status.startswith("🔵"):  # MySQL Only → added in MySQL, missing from BQ
+                added.append({
+                    "name": col,
+                    "type": row["Expected BQ Type"],
+                    "mode": "NULLABLE",
+                })
+            elif status.startswith("🟠"):  # BQ Only → removed from MySQL
+                bq_info = next((b for b in bq_rows if b["column_name"] == col), {})
+                removed.append({
+                    "name": col,
+                    "type": row["Actual BQ Type"],
+                    "mode": bq_info.get("mode", "NULLABLE"),
+                })
+            elif status.startswith("🟡"):  # Type Mismatch
+                mismatches.append({
+                    "name":       col,
+                    "BQ_Type":    row["Actual BQ Type"],
+                    "MySQL_Type": row["Expected BQ Type"],
+                })
+
+        event_type = (
+            (["added_columns"]      if added      else []) +
+            (["removed_columns"]    if removed    else []) +
+            (["datatype_mismatches"] if mismatches else [])
+        )
+
+        entry: dict = {
+            "table_name":   name,
+            "table_exists": str(table_exists).lower(),
+            "event_type":   event_type,
+        }
+        if added:
+            entry["added_columns"] = added
+        if removed:
+            entry["removed_columns"] = removed
+        if mismatches:
+            entry["datatype_mismatches"] = mismatches
+
+        audit.append(entry)
+
+    with open(output_file, "w", encoding="utf-8") as fh:
+        json.dump(audit, fh, indent=2)
+    return output_file
+
+
 @tool
 def run_schema_audit() -> str:
     """Run full MySQL → BigQuery schema reconciliation audit.
@@ -400,6 +479,10 @@ def run_schema_audit() -> str:
             results["prod"]["ddl_json"] = _write_ddl_json(
                 meta_df, prod_tables, "prd", output_dir, timestamp,
             )
+            results["prod"]["audit_json"] = _write_audit_json(
+                meta_df, prod_tables, config.SCHEMA_BQ_PROJECT_PROD,
+                "prd", client, output_dir, timestamp,
+            )
         elif prod_tables:
             results["prod_skipped"] = "SCHEMA_BQ_PROJECT_PROD not set"
 
@@ -411,6 +494,10 @@ def run_schema_audit() -> str:
             )
             results["uat"]["ddl_json"] = _write_ddl_json(
                 meta_df, uat_tables, "uat", output_dir, timestamp,
+            )
+            results["uat"]["audit_json"] = _write_audit_json(
+                meta_df, uat_tables, uat_project,
+                "uat", client, output_dir, timestamp,
             )
 
         log_audit("schema_tools", config.SCHEMA_METADATA_PROJECT, "run_schema_audit",

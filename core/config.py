@@ -10,10 +10,7 @@ GOOGLE_CLOUD_PROJECT: str = os.getenv("GOOGLE_CLOUD_PROJECT", "")
 GOOGLE_CLOUD_LOCATION: str = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 # Path to a GCP service-account JSON file. When set, credentials are loaded from this file
 # instead of relying on Application Default Credentials (gcloud auth / metadata server).
-AGENT_SA_KEY_PATH: str = os.getenv("AGENT_SA_KEY_PATH", "")
-
-if AGENT_SA_KEY_PATH:
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = AGENT_SA_KEY_PATH
+GOOGLE_APPLICATION_CREDENTIALS: str = os.getenv("AGENT_SA_KEY_PATH", "")
 
 # Project charged for BigQuery slot usage — may differ from the data projects being queried.
 # Falls back to the first entry in BQ_ALLOWED_PROJECTS if not set.
