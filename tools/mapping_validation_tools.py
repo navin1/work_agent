@@ -660,12 +660,17 @@ def _extract_sql_from_python(
     source: str,
     file_dir: "Path",
     task_filter: str | None,
+    path_reader: "Callable[[str], str | None] | None" = None,
 ) -> "dict[str, str]":
     """Return {task_id: sql_text} extracted from a Python DAG source file.
 
     Strategy 1 — AST walk: finds BigQueryOperator / BigQueryInsertJobOperator calls,
     resolves sql= string literals, variable references, and .sql file paths.
     Strategy 2 — regex fallback: triple-quoted strings containing SQL keywords.
+
+    path_reader: optional callback(repo_relative_path) -> file_content | None.
+    When supplied (git mode), unresolved file paths are read via this callback instead
+    of the local filesystem.
     """
     import ast
 
@@ -707,22 +712,48 @@ def _extract_sql_from_python(
                 if kw.arg == "configuration" and isinstance(kw.value, ast.Dict):
                     try:
                         cfg = ast.literal_eval(kw.value)
-                        from core.sql_formatter import extract_sql as _exsql
-                        extracted = _exsql(cfg)
-                        if extracted:
-                            sql_val = sql_val or extracted
+                        # Direct path: cfg["query"]["query"] may be a .sql file path or
+                        # a {% include %} string — extract_sql won't return these because
+                        # they contain no SQL keywords, so grab the raw value first.
+                        _raw_q = (cfg.get("query") or {}).get("query", "")
+                        if isinstance(_raw_q, str) and _raw_q.strip():
+                            sql_val = sql_val or _raw_q.strip()
+                        # Fall back to extract_sql for actual inline SQL
+                        if not sql_val:
+                            from core.sql_formatter import extract_sql as _exsql
+                            extracted = _exsql(cfg)
+                            if extracted:
+                                sql_val = extracted
                     except Exception:
                         pass
 
             if sql_val and isinstance(sql_val, str):
                 stripped = sql_val.strip()
-                # Resolve .sql file path reference
-                if stripped.endswith(".sql"):
+                # Resolve Jinja {% include 'path/to/file.sql' %} — used by
+                # BigQueryInsertJobOperator with Airflow's template_searchpath
+                _include_m = re.search(
+                    r"""{%-?\s*include\s+['"]([^'"]+)['"]\s*-?%}""", stripped
+                )
+                if _include_m:
+                    inc_path = _include_m.group(1)
+                    sql_val = None
+                    # Try local filesystem first: relative to DAG dir, then walk up
+                    for base in (file_dir, *file_dir.parents):
+                        candidate = (base / inc_path).resolve()
+                        if candidate.is_file():
+                            sql_val = candidate.read_text(encoding="utf-8", errors="replace")
+                            break
+                    # If not found locally, try git reader (git mode)
+                    if sql_val is None and path_reader is not None:
+                        sql_val = path_reader(inc_path)
+                # Resolve plain .sql file path reference
+                elif stripped.endswith(".sql"):
+                    sql_val = None
                     candidate = (file_dir / stripped.lstrip("/")).resolve()
                     if candidate.is_file():
                         sql_val = candidate.read_text(encoding="utf-8", errors="replace")
-                    else:
-                        sql_val = None
+                    elif path_reader is not None:
+                        sql_val = path_reader(stripped.lstrip("/"))
 
                 if sql_val and _looks_like_sql(sql_val):
                     if task_filter is None or tid == task_filter:
@@ -962,7 +993,19 @@ def _diagnose_git_fetch(
                 ["git", "-C", str(repo), "show", f"{ref}:{git_path}"],
                 capture_output=True, text=True, timeout=15,
             ).stdout
-            sqls = _extract_sql_from_python(content, repo / Path(git_path).parent, task_filter)
+            def _diag_git_reader(rel_path: str) -> "str | None":
+                try:
+                    out = subprocess.run(
+                        ["git", "-C", str(repo), "show", f"{ref}:{rel_path}"],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    return out.stdout if out.returncode == 0 else None
+                except Exception:
+                    return None
+
+            sqls = _extract_sql_from_python(
+                content, repo / Path(git_path).parent, task_filter, path_reader=_diag_git_reader
+            )
             if sqls:
                 diag["sql_per_file"][git_path] = list(sqls.keys())
                 any_sql = True
@@ -1082,7 +1125,19 @@ def _fetch_sql_git(
             if task_filter is None or fpath.stem == task_filter:
                 results[fpath.stem] = format_sql(_resolve_jinja(content, resolved_vars))
         else:
-            for tid, raw in _extract_sql_from_python(content, repo / fpath.parent, task_filter).items():
+            def _git_reader(rel_path: str) -> "str | None":
+                try:
+                    out = subprocess.run(
+                        ["git", "-C", str(repo), "show", f"{ref}:{rel_path}"],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    return out.stdout if out.returncode == 0 else None
+                except Exception:
+                    return None
+
+            for tid, raw in _extract_sql_from_python(
+                content, repo / fpath.parent, task_filter, path_reader=_git_reader
+            ).items():
                 results[tid] = format_sql(_resolve_jinja(raw, resolved_vars))
 
     return results
