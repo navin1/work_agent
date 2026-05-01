@@ -51,17 +51,60 @@ def render_mapping_validation(raw_json: str) -> None:
 
 	# Handle bulk validation output
 	if data.get("is_bulk"):
-		st.markdown(f"### Bulk Validation Results: {data.get('files_processed')} file(s)")
-		
+		n_files = data.get("files_processed", 0)
+		source  = data.get("source", "")
+		label   = f" ({source})" if source else ""
+		st.markdown(f"### Batch Validation Results: {n_files} file(s){label}")
+
+		# ── Download button ───────────────────────────────────────────────────
+		export_path = data.get("export_path")
+		if export_path:
+			from pathlib import Path as _Path
+			ep = _Path(export_path)
+			if ep.is_file():
+				st.download_button(
+					label="⬇️ Download Results Excel",
+					data=ep.read_bytes(),
+					file_name=ep.name,
+					mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+					use_container_width=False,
+				)
+
+		# ── Warnings ─────────────────────────────────────────────────────────
+		for w in data.get("warnings", []):
+			st.warning(w)
+
+		# ── Progress log ─────────────────────────────────────────────────────
+		progress_log = data.get("progress_log", [])
+		if progress_log:
+			with st.expander(f"📋 Processing log ({len(progress_log)} file(s))", expanded=False):
+				import pandas as _pd
+				rows = []
+				for entry in progress_log:
+					icon = "✅" if entry.get("status") == "done" else "❌"
+					rows.append({
+						"":         icon,
+						"File":     entry.get("file", ""),
+						"DAG":      entry.get("dag_id", ""),
+						"Pass":     entry.get("pass", 0),
+						"Fail":     entry.get("fail", 0),
+						"Partial":  entry.get("partial", 0),
+						"No SQL":   entry.get("not_evaluated", 0),
+						"Total":    entry.get("total", 0),
+					})
+				st.dataframe(_pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+		# ── Overall summary metrics ───────────────────────────────────────────
 		ovr = data.get("overall_summary", {})
 		c1, c2, c3, c4, c5, c6 = st.columns(6)
-		c1.metric("🟢 PASS",	ovr.get("pass", 0))
-		c2.metric("🔴 FAIL",	ovr.get("fail", 0))
+		c1.metric("🟢 PASS",    ovr.get("pass", 0))
+		c2.metric("🔴 FAIL",    ovr.get("fail", 0))
 		c3.metric("🟡 PARTIAL", ovr.get("partial", 0))
-		c4.metric("⚪ N/A",	 ovr.get("not_applicable", 0))
-		c5.metric("🔵 No SQL", ovr.get("not_evaluated", 0))
-		c6.metric("Total",	 ovr.get("total", 0))
-		
+		c4.metric("⚪ N/A",     ovr.get("not_applicable", 0))
+		c5.metric("🔵 No SQL",  ovr.get("not_evaluated", 0))
+		c6.metric("Total",      ovr.get("total", 0))
+
+		# ── Per-file detail panels ────────────────────────────────────────────
 		for res in data.get("results", []):
 			st.divider()
 			st.markdown(f"#### {res.get('mapping_file', 'Unknown file')}")

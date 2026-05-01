@@ -1738,6 +1738,242 @@ def _do_validate_mapping(
 	except Exception as exc:
 		return {"error": str(exc)}
 
+# ── Batch folder tool ────────────────────────────────────────────────────────
+
+def _discover_and_stage_excel_files(
+    folder_path: str | None,
+    gcs_path: str | None,
+    git_folder: str | None,
+    git_repo_path: str | None,
+    git_ref: str | None,
+) -> tuple[list[Path], list[str]]:
+    """Return (list_of_local_paths, warning_messages).
+
+    Local paths point to files inside DATA_ROOT/mapping/ ready for ingest.
+    Files from GCS / git are downloaded/extracted into a staging subdirectory.
+    """
+    import shutil, tempfile
+    from core import config
+
+    data_root   = Path(config.DATA_ROOT)
+    mapping_dir = data_root / "mapping"
+    mapping_dir.mkdir(parents=True, exist_ok=True)
+
+    staged: list[Path] = []
+    warnings: list[str] = []
+
+    # ── Local folder ─────────────────────────────────────────────────────────
+    if folder_path:
+        src = Path(folder_path)
+        if not src.is_dir():
+            warnings.append(f"folder_path '{folder_path}' does not exist or is not a directory.")
+            return staged, warnings
+        for f in src.glob("*.xlsx"):
+            dest = mapping_dir / f.name
+            if not dest.exists():
+                shutil.copy2(f, dest)
+            staged.append(dest)
+
+    # ── GCS path  gs://bucket/prefix/ ────────────────────────────────────────
+    elif gcs_path:
+        try:
+            from google.cloud import storage as gcs
+            # Parse gs://bucket/prefix
+            without_scheme = gcs_path.replace("gs://", "")
+            bucket_name, _, prefix = without_scheme.partition("/")
+            client = gcs.Client(project=config.GOOGLE_CLOUD_PROJECT or None)
+            blobs  = client.list_blobs(bucket_name, prefix=prefix)
+            for blob in blobs:
+                if not blob.name.endswith(".xlsx"):
+                    continue
+                fname = Path(blob.name).name
+                dest  = mapping_dir / fname
+                if not dest.exists():
+                    blob.download_to_filename(str(dest))
+                staged.append(dest)
+        except Exception as exc:
+            warnings.append(f"GCS download error: {exc}")
+
+    # ── Git folder  (path within repo at a given ref) ─────────────────────────
+    elif git_folder:
+        import subprocess
+        repo = Path(git_repo_path or config.LOCAL_GIT_REPO_PATH)
+        ref  = git_ref or config.LOCAL_GIT_DEFAULT_BRANCH
+        if not repo.is_dir():
+            warnings.append(f"git_repo_path '{repo}' does not exist.")
+            return staged, warnings
+        try:
+            ls = subprocess.run(
+                ["git", "-C", str(repo), "ls-tree", "-r", "--name-only", ref],
+                capture_output=True, text=True, timeout=30,
+            )
+            all_files = ls.stdout.strip().splitlines()
+        except Exception as exc:
+            warnings.append(f"git ls-tree failed: {exc}")
+            return staged, warnings
+
+        folder_norm = git_folder.strip("/")
+        xlsx_files  = [
+            f for f in all_files
+            if f.endswith(".xlsx") and f.startswith(folder_norm)
+        ]
+        for git_path in xlsx_files:
+            fname = Path(git_path).name
+            dest  = mapping_dir / fname
+            if not dest.exists():
+                try:
+                    content = subprocess.run(
+                        ["git", "-C", str(repo), "show", f"{ref}:{git_path}"],
+                        capture_output=True, timeout=30,
+                    ).stdout
+                    dest.write_bytes(content)
+                except Exception as exc:
+                    warnings.append(f"git show failed for {git_path}: {exc}")
+                    continue
+            staged.append(dest)
+
+    return staged, warnings
+
+
+@tool
+def validate_mapping_folder(
+    folder_path: str = None,
+    gcs_path: str = None,
+    git_folder: str = None,
+    composer_env: str = None,
+    source_mode: str = "composer",
+    local_dag_path: str = None,
+    git_repo_path: str = None,
+    git_ref: str = None,
+    force_refresh: bool = False,
+) -> str:
+    """Validate ALL mapping Excel files found in a folder against SQL / DAG code.
+
+    Exactly one of folder_path / gcs_path / git_folder must be supplied:
+      folder_path : absolute path to a local directory containing .xlsx files.
+      gcs_path    : GCS URI, e.g. "gs://my-bucket/mappings/".
+      git_folder  : repo-relative folder containing .xlsx files, e.g. "config/mappings".
+                    Uses LOCAL_GIT_REPO_PATH + git_ref (or LOCAL_GIT_DEFAULT_BRANCH).
+
+    source_mode controls where SQL is read from — same as validate_mapping_rules:
+      "composer" (default) | "local" | "git"
+
+    The DAG id for each file is resolved from config/excel_mapping.json (dag_names field).
+    Files not present in the registry are auto-ingested before validation.
+
+    Returns consolidated results + path to a generated Excel export file.
+    """
+    import json, time
+    from core import config, persistence
+    from core.duckdb_manager import get_manager
+    from utils.excel_export import export_validation_excel
+
+    start = time.time()
+
+    # ── 1. Discover and stage Excel files ────────────────────────────────────
+    staged, disc_warnings = _discover_and_stage_excel_files(
+        folder_path, gcs_path, git_folder, git_repo_path, git_ref
+    )
+
+    if not staged:
+        return safe_json({
+            "error": "No .xlsx files found in the specified location.",
+            "warnings": disc_warnings,
+            "hint": (
+                "Check folder_path / gcs_path / git_folder. "
+                "For git, ensure git_repo_path and git_ref are set."
+            ),
+        })
+
+    # ── 2. Auto-ingest any newly staged files ────────────────────────────────
+    try:
+        from tools.excel_tools import ingest_excel_files
+        ingest_excel_files()
+    except Exception:
+        pass
+
+    # ── 3. Resolve DAG ids from excel_mapping.json ───────────────────────────
+    excel_map = persistence.get_excel_mapping()
+
+    # ── 4. Validate each file ────────────────────────────────────────────────
+    results: list[dict]      = []
+    progress_log: list[dict] = []
+    overall_summary = {
+        "total": 0, "pass": 0, "fail": 0, "partial": 0,
+        "not_applicable": 0, "not_evaluated": 0, "error": 0, "low_confidence": 0,
+    }
+
+    for xlsx_path in staged:
+        file_stem = xlsx_path.stem
+        file_cfg  = excel_map.get(file_stem) or excel_map.get(file_stem.lower()) or {}
+        dag_names = file_cfg.get("dag_names") or []
+        resolved_dag = dag_names[0] if dag_names else None
+
+        res = _do_validate_mapping(
+            xlsx_path.name,
+            composer_env,
+            resolved_dag,
+            None,                   # task_id
+            None,                   # target_column_filter
+            force_refresh,
+            source_mode,
+            local_dag_path,
+            git_repo_path,
+            git_ref,
+        )
+
+        results.append(res)
+
+        s = res.get("summary", {})
+        for k in overall_summary:
+            overall_summary[k] += s.get(k, 0)
+
+        progress_log.append({
+            "file":           xlsx_path.name,
+            "dag_id":         resolved_dag or "(not configured)",
+            "status":         "error" if "error" in res else "done",
+            "pass":           s.get("pass", 0),
+            "fail":           s.get("fail", 0),
+            "partial":        s.get("partial", 0),
+            "not_evaluated":  s.get("not_evaluated", 0),
+            "total":          s.get("total", 0),
+        })
+
+    # ── 5. Determine env label ────────────────────────────────────────────────
+    if source_mode == "composer":
+        env_label = composer_env or "composer"
+    elif source_mode == "git":
+        env_label = (git_ref or config.LOCAL_GIT_DEFAULT_BRANCH or "git").replace("/", "-")
+    else:
+        env_label = "local"
+
+    # ── 6. Export to Excel ───────────────────────────────────────────────────
+    export_path: str | None = None
+    try:
+        out = export_validation_excel(
+            results,
+            env_label,
+            Path(config.EXPORTS_ROOT),
+        )
+        export_path = str(out)
+    except Exception as exc:
+        disc_warnings.append(f"Excel export failed: {exc}")
+
+    return safe_json({
+        "is_bulk":          True,
+        "is_folder_batch":  True,
+        "source":           "gcs" if gcs_path else ("git" if git_folder else "local"),
+        "env_label":        env_label,
+        "files_processed":  len(results),
+        "overall_summary":  overall_summary,
+        "progress_log":     progress_log,
+        "results":          results,
+        "export_path":      export_path,
+        "warnings":         disc_warnings,
+        "elapsed_seconds":  round(time.time() - start, 1),
+    })
+
+
 # ── Main tool ─────────────────────────────────────────────────────────────────
 
 @tool

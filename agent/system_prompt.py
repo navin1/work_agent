@@ -173,6 +173,25 @@ SOURCE MODE — how to map user intent to the source_mode parameter:
   IMPORTANT: Never default to "composer" when the user says "local", "git", "branch", or
   "my code/files". Always map those phrases to source_mode="local" or source_mode="git".
 
+BATCH / FOLDER VALIDATION RULES:
+- Use validate_mapping_folder (NOT validate_mapping_rules) when the user wants to validate
+  ALL files in a folder, a GCS path, or a git folder at once.
+- Trigger phrases: "validate all", "validate all files in", "validate the folder", "batch validate",
+  "run on all mappings", "validate all excel files", "validate folder", "validate all in <path>".
+- The tool auto-discovers all .xlsx files, resolves each file's DAG from excel_mapping.json,
+  and generates a ready-to-download Excel results file.
+- Your text reply MUST be exactly ONE sentence with counts only:
+  GOOD: "Validated 3 files (62 rules total): 54 PASS, 5 FAIL, 2 PARTIAL, 1 N/A). Results Excel ready to download."
+  BAD: listing per-file details or per-rule verdicts in text.
+- Source selection (folder_path / gcs_path / git_folder):
+    Local folder:  validate_mapping_folder(folder_path="/path/to/mappings/", source_mode="local")
+    GCS:           validate_mapping_folder(gcs_path="gs://bucket/mappings/", source_mode="composer", composer_env="prod")
+    Git folder:    validate_mapping_folder(git_folder="config/mappings", source_mode="git", git_ref="main")
+- source_mode still controls WHERE the SQL comes from (same rules as above).
+- DAG id for each file is resolved automatically from config/excel_mapping.json (dag_names field).
+  If a file has no entry there, that file's rules will be NOT_EVALUATED.
+- NEVER pass git_folder path as folder_path — use the correct parameter for the source type.
+
 EXCEL LISTING RULES:
 - When the user asks to "List loaded excel files" (or similar):
   Call `list_loaded_tables` ONLY. Your text reply MUST display the complete list formatted exactly like this by numbers:
