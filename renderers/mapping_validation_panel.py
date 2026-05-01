@@ -100,6 +100,23 @@ def _render_single_file_validation(data: dict, uid: str) -> None:
 		)
 	if data.get("sql_fetch_error"):
 		st.warning(f"SQL fetch issue: {data['sql_fetch_error']}")
+	if data.get("sql_debug"):
+		dbg = data["sql_debug"]
+		with st.expander("🔍 SQL fetch diagnostics", expanded=True):
+			st.write(f"**Step failed:** `{dbg.get('step_failed', '?')}`")
+			if dbg.get("hint"):
+				st.info(dbg["hint"])
+			if dbg.get("files_found"):
+				st.write("**Files found:**")
+				for f in dbg["files_found"]:
+					st.code(f, language=None)
+			if dbg.get("sql_per_file"):
+				st.write("**SQL extraction per file:**")
+				for fpath, result in dbg["sql_per_file"].items():
+					if isinstance(result, list):
+						st.write(f"`{fpath}` → tasks: {result}")
+					else:
+						st.write(f"`{fpath}` → {result}")
 
 	# ── Context strip ─────────────────────────────────────────────────────────
 	ctx_parts = []

@@ -782,6 +782,206 @@ def _find_dag_files(root: "Path", dag_id: str) -> "list[Path]":
     return candidates
 
 
+def _diagnose_local_fetch(
+    dag_id: str,
+    local_root: str,
+    task_filter: str | None,
+) -> dict:
+    """Walk the local SQL fetch pipeline step by step and return a diagnostic dict.
+
+    Called when _fetch_sql_local returns empty so the user can see exactly which
+    step broke: directory missing → no files matched → files found but no SQL extracted.
+    """
+    root = Path(local_root)
+    diag: dict = {
+        "dag_id":            dag_id,
+        "local_root":        local_root,
+        "root_exists":       root.is_dir(),
+        "files_found":       [],
+        "sql_per_file":      {},
+        "step_failed":       "",
+        "hint":              "",
+    }
+
+    if not root.is_dir():
+        diag["step_failed"] = "directory_not_found"
+        diag["hint"] = (
+            f"LOCAL_DAG_ROOT='{local_root}' does not exist or is not a directory. "
+            "Check the path in your .env file."
+        )
+        return diag
+
+    files = _find_dag_files(root, dag_id)
+    diag["files_found"] = [str(f) for f in files]
+
+    if not files:
+        diag["step_failed"] = "no_files_matched"
+        dag_slug = dag_id.lower().replace("-", "_")
+        diag["hint"] = (
+            f"No .py or .sql files matched dag_id='{dag_id}' under '{local_root}'. "
+            f"Discovery looks for '{dag_slug}' in filenames first, "
+            f"then falls back to OS grep for the dag_id string inside .py files. "
+            f"Check that the DAG filename contains '{dag_slug}' or that the dag_id "
+            f"string appears in the file content."
+        )
+        return diag
+
+    any_sql = False
+    for fpath in files:
+        try:
+            source = fpath.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            diag["sql_per_file"][str(fpath)] = f"READ ERROR: {exc}"
+            continue
+
+        if fpath.suffix == ".sql":
+            diag["sql_per_file"][str(fpath)] = ["<direct .sql file>"]
+            any_sql = True
+        else:
+            sqls = _extract_sql_from_python(source, fpath.parent, task_filter)
+            if sqls:
+                diag["sql_per_file"][str(fpath)] = list(sqls.keys())
+                any_sql = True
+            else:
+                diag["sql_per_file"][str(fpath)] = (
+                    "no SQL extracted — no sql=/bql= kwargs found, "
+                    "no resolvable .sql file paths, "
+                    "and no triple-quoted SQL strings detected"
+                )
+
+    if not any_sql:
+        diag["step_failed"] = "no_sql_extracted"
+        diag["hint"] = (
+            "Files were found but no SQL could be extracted from them. "
+            "Common causes: (1) the DAG uses a variable for sql= that cannot be "
+            "statically resolved (e.g. sql=QUERY_VAR where QUERY_VAR is built at "
+            "runtime); (2) the sql= value is a GCS/Airflow path string — only local "
+            ".sql paths are resolved; (3) BigQueryInsertJobOperator uses a "
+            "configuration= dict built dynamically. "
+            "Try pointing directly at the .sql file instead: pass the sql file path "
+            "as local_dag_path or add the .sql files alongside the .py DAG file."
+        )
+    else:
+        diag["step_failed"] = "format_or_jinja_error"
+        diag["hint"] = (
+            "SQL was extracted but was empty after Jinja resolution or formatting. "
+            "Check LOCAL_JINJA_VARS_PATH and ensure the rendered SQL is valid BigQuery SQL."
+        )
+
+    return diag
+
+
+def _diagnose_git_fetch(
+    dag_id: str,
+    git_root: str,
+    ref: str,
+    task_filter: str | None,
+) -> dict:
+    """Walk the git SQL fetch pipeline step by step and return a diagnostic dict."""
+    import subprocess
+
+    repo = Path(git_root)
+    diag: dict = {
+        "dag_id":        dag_id,
+        "git_root":      git_root,
+        "ref":           ref,
+        "root_exists":   repo.is_dir(),
+        "ls_tree_ok":    False,
+        "files_found":   [],
+        "sql_per_file":  {},
+        "step_failed":   "",
+        "hint":          "",
+    }
+
+    if not repo.is_dir():
+        diag["step_failed"] = "directory_not_found"
+        diag["hint"] = f"LOCAL_GIT_REPO_PATH='{git_root}' does not exist."
+        return diag
+
+    try:
+        ls = subprocess.run(
+            ["git", "-C", str(repo), "ls-tree", "-r", "--name-only", ref],
+            capture_output=True, text=True, timeout=30,
+        )
+        if ls.returncode != 0:
+            diag["step_failed"] = "invalid_ref"
+            diag["hint"] = (
+                f"'git ls-tree' failed for ref='{ref}' in '{git_root}'. "
+                f"git stderr: {ls.stderr.strip()}. "
+                "Check that the branch/tag/commit exists in the local repo."
+            )
+            return diag
+        all_files = ls.stdout.strip().splitlines()
+        diag["ls_tree_ok"] = True
+    except Exception as exc:
+        diag["step_failed"] = "git_error"
+        diag["hint"] = f"git command failed: {exc}"
+        return diag
+
+    dag_slug = dag_id.lower().replace("-", "_")
+    name_matches = [
+        f for f in all_files
+        if Path(f).suffix in (".py", ".sql")
+        and (dag_slug in Path(f).stem.lower() or dag_id.lower() in Path(f).stem.lower())
+    ]
+
+    # Also try git grep
+    grep_matches: list[str] = []
+    if not name_matches:
+        try:
+            grep = subprocess.run(
+                ["git", "-C", str(repo), "grep", "-l", dag_id, ref, "--", "*.py"],
+                capture_output=True, text=True, timeout=20,
+            )
+            for line in grep.stdout.strip().splitlines():
+                fpath = line.split(":", 1)[-1].strip()
+                if fpath:
+                    grep_matches.append(fpath)
+        except Exception:
+            pass
+
+    candidate_paths = name_matches or grep_matches
+    diag["files_found"] = candidate_paths
+    diag["name_match_count"] = len(name_matches)
+    diag["grep_match_count"] = len(grep_matches)
+
+    if not candidate_paths:
+        diag["step_failed"] = "no_files_matched"
+        diag["hint"] = (
+            f"No .py/.sql files matched dag_id='{dag_id}' at ref='{ref}'. "
+            f"Name search looked for '{dag_slug}' in filenames across {len(all_files)} "
+            f"tracked files. git grep also found nothing. "
+            "Check that the dag_id string appears in a filename or file content at this ref."
+        )
+        return diag
+
+    any_sql = False
+    for git_path in candidate_paths[:5]:  # inspect first 5 only to keep it fast
+        try:
+            content = subprocess.run(
+                ["git", "-C", str(repo), "show", f"{ref}:{git_path}"],
+                capture_output=True, text=True, timeout=15,
+            ).stdout
+            sqls = _extract_sql_from_python(content, repo / Path(git_path).parent, task_filter)
+            if sqls:
+                diag["sql_per_file"][git_path] = list(sqls.keys())
+                any_sql = True
+            else:
+                diag["sql_per_file"][git_path] = "no SQL extracted"
+        except Exception as exc:
+            diag["sql_per_file"][git_path] = f"ERROR: {exc}"
+
+    if not any_sql:
+        diag["step_failed"] = "no_sql_extracted"
+        diag["hint"] = (
+            "Files found at this ref but no SQL could be extracted. "
+            "Same causes as local mode: dynamic sql= variables, runtime-built "
+            "configuration= dicts, or GCS SQL paths that cannot be resolved from git."
+        )
+
+    return diag
+
+
 def _fetch_sql_local(
     dag_id: str,
     local_dag_root: str,
@@ -1065,6 +1265,7 @@ def _do_validate_mapping(
 		# ── Fetch SQL — branched on source_mode ──────────────────────────────────
 		task_sqls: dict[str, str] = {}
 		sql_fetch_error: str | None = None
+		sql_debug: dict | None = None
 		tasks_evaluated: list[str] = []
 
 		if source_mode == "local":
@@ -1078,6 +1279,9 @@ def _do_validate_mapping(
 					jinja_vars = _load_jinja_vars()
 					task_sqls = _fetch_sql_local(resolved_dag_id, local_root, task_id, jinja_vars)
 					tasks_evaluated = list(task_sqls.keys())
+					if not task_sqls:
+						sql_debug = _diagnose_local_fetch(resolved_dag_id, local_root, task_id)
+						sql_fetch_error = sql_debug.get("hint") or "No SQL found in local mode."
 				except Exception as exc:
 					sql_fetch_error = str(exc)
 
@@ -1092,6 +1296,9 @@ def _do_validate_mapping(
 				try:
 					task_sqls = _fetch_sql_git(resolved_dag_id, git_root, ref, task_id)
 					tasks_evaluated = list(task_sqls.keys())
+					if not task_sqls:
+						sql_debug = _diagnose_git_fetch(resolved_dag_id, git_root, ref, task_id)
+						sql_fetch_error = sql_debug.get("hint") or "No SQL found in git mode."
 				except Exception as exc:
 					sql_fetch_error = str(exc)
 
@@ -1222,7 +1429,11 @@ def _do_validate_mapping(
 					out["verdict"] = "NOT_EVALUATED"
 					out["reason"] = (
 						sql_fetch_error
-						or "No SQL available (Composer not configured or DAG not found)."
+						or (
+							"No SQL available — DAG not found or no SQL could be extracted."
+							if source_mode != "composer"
+							else "No SQL available (Composer not configured or DAG not found)."
+						)
 					)
 					summary["not_evaluated"] += 1
 				else:
@@ -1276,6 +1487,8 @@ def _do_validate_mapping(
 		}
 		if sql_fetch_error:
 			result["sql_fetch_error"] = sql_fetch_error
+		if sql_debug:
+			result["sql_debug"] = sql_debug
 
 		log_audit(
 			"mapping_validation", resolved_env or "local",
