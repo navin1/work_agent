@@ -1954,6 +1954,26 @@ def export_mapping_results(
         )
         results.append(res)
 
+    def _slim(r: dict) -> dict:
+        """Strip heavy `evidence` fields so the JSON stays small enough for the renderer."""
+        slim_groups = []
+        for g in r.get("bq_table_groups", []):
+            slim_rules = [{k: v for k, v in rule.items() if k != "evidence"}
+                          for rule in g.get("rules", [])]
+            slim_groups.append({**g, "rules": slim_rules})
+        return {
+            "mapping_file":   r.get("mapping_file"),
+            "dag_id":         r.get("dag_id"),
+            "source_mode":    r.get("source_mode"),
+            "composer_env":   r.get("composer_env"),
+            "column_config":  r.get("column_config"),
+            "summary":        r.get("summary"),
+            "sql_structure":  r.get("sql_structure"),
+            "bq_table_groups": slim_groups,
+            "sql_fetch_error": r.get("sql_fetch_error"),
+            "sql_debug":       r.get("sql_debug"),
+        }
+
     try:
         out = export_validation_excel(results, env_label, Path(config.EXPORTS_ROOT))
         return safe_json({
@@ -1965,6 +1985,7 @@ def export_mapping_results(
                 k: sum(r.get("summary", {}).get(k, 0) for r in results)
                 for k in ("total", "pass", "fail", "partial", "not_applicable", "not_evaluated")
             },
+            "results": [_slim(r) for r in results],
         })
     except Exception as exc:
         return safe_json({"error": f"Excel export failed: {exc}"})

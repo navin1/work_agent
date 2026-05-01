@@ -290,12 +290,16 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
     steps = agent_output.get("intermediate_steps", [])
     if not steps:
         return
-    tools_called = {}
+    tools_called: dict[str, str] = {}
+    # validate_mapping_rules may be called once per file in a batch — collect all calls
+    validate_mapping_calls: list[str] = []
     for step in steps:
         try:
-            tool_name = step[0].tool
+            tool_name   = step[0].tool
             tool_output = step[1]
-            tools_called[tool_name] = tool_output
+            tools_called[tool_name] = tool_output   # last-call-wins for single-call tools
+            if tool_name == "validate_mapping_rules":
+                validate_mapping_calls.append(tool_output)
         except Exception:
             continue
 
@@ -376,13 +380,18 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
     if "browse_git" in tools_called:
         _fb.render_file_browser(tools_called["browse_git"])
 
-    if "validate_mapping_rules" in tools_called:
-        _mvp.render_mapping_validation(tools_called["validate_mapping_rules"])
+    # In batch mode (multiple per-file calls + export), render each file compact —
+    # the full Mapping Details appear in render_export_result's consolidated view.
+    # In single-file mode (no export call), render full with download.
+    _has_export = "export_mapping_results" in tools_called
+    _batch_mode = len(validate_mapping_calls) > 1 or _has_export
+    for _vm_output in validate_mapping_calls:
+        _mvp.render_mapping_validation(_vm_output, compact=_batch_mode)
 
     if "validate_mapping_folder" in tools_called:
         _mvp.render_mapping_validation(tools_called["validate_mapping_folder"])
 
-    if "export_mapping_results" in tools_called:
+    if _has_export:
         _mvp.render_export_result(tools_called["export_mapping_results"])
 
 
