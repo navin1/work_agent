@@ -656,6 +656,106 @@ def _looks_like_sql(text: str) -> bool:
     return bool(text and len(text.strip()) > 40 and _SQL_KEYWORD_RE.search(text))
 
 
+def _try_eval_str_node(node: "ast.AST", var_map: "dict[str, str]") -> "str | None":
+    """Best-effort evaluation of an AST node to a plain string.
+
+    Handles: string literals, variable references, string concatenation (+),
+    os.path.join / pathlib calls, str.format(), and f-strings.
+    Unknown sub-expressions are replaced with '__VAR__' so callers can still
+    detect '.sql' suffixes on partially-resolved paths.
+    """
+    import ast
+
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return var_map.get(node.id)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left  = _try_eval_str_node(node.left,  var_map)
+        right = _try_eval_str_node(node.right, var_map)
+        if left is not None and right is not None:
+            return left + right
+        # Return whichever side looks like a resolvable SQL path
+        for side in (left, right):
+            if side and side.strip().endswith(".sql"):
+                return side
+        return None
+    if isinstance(node, ast.Call):
+        func = node.func
+        attr = (
+            func.attr if isinstance(func, ast.Attribute) else
+            func.id   if isinstance(func, ast.Name) else ""
+        )
+        # os.path.join / Path.joinpath / any join-like call
+        if attr in ("join", "joinpath"):
+            parts = [_try_eval_str_node(a, var_map) for a in node.args]
+            resolved = [p if p is not None else "__VAR__" for p in parts]
+            return "/".join(p.strip("/") for p in resolved) if resolved else None
+        # "template/{table}.sql".format(table="foo") or "{}".format(x)
+        if attr == "format" and isinstance(func, ast.Attribute):
+            fmt = _try_eval_str_node(func.value, var_map)
+            if fmt:
+                # Resolve positional and keyword args to substitute into the template
+                pos_args = [_try_eval_str_node(a, var_map) for a in node.args]
+                kw_args  = {
+                    kw.arg: _try_eval_str_node(kw.value, var_map)
+                    for kw in node.keywords
+                    if kw.arg is not None
+                }
+                try:
+                    import string
+                    out_parts: list[str] = []
+                    pos_idx = 0
+                    for literal, field_name, _, _ in string.Formatter().parse(fmt):
+                        out_parts.append(literal)
+                        if field_name is None:
+                            continue
+                        base_key = field_name.split(".")[0].split("[")[0]
+                        if base_key == "" or base_key.isdigit():
+                            idx = int(base_key) if base_key.isdigit() else pos_idx
+                            val = pos_args[idx] if idx < len(pos_args) else None
+                            pos_idx += 1
+                        else:
+                            val = kw_args.get(base_key)
+                        out_parts.append(val if val is not None else "__VAR__")
+                    return "".join(out_parts)
+                except Exception:
+                    return re.sub(r"\{[^}]*\}", "__VAR__", fmt)
+    if isinstance(node, ast.JoinedStr):
+        # f-string — render constant parts, replace FormattedValues with __VAR__
+        parts: list[str] = []
+        for v in node.values:
+            if isinstance(v, ast.Constant):
+                parts.append(str(v.value))
+            elif isinstance(v, ast.FormattedValue):
+                inner = _try_eval_str_node(v.value, var_map) if isinstance(v.value, ast.AST) else None
+                parts.append(inner if inner is not None else "__VAR__")
+        return "".join(parts) or None
+    return None
+
+
+def _extract_cfg_query_from_ast(
+    dict_node: "ast.Dict", var_map: "dict[str, str]"
+) -> "str | None":
+    """Walk a configuration={} AST dict node to extract configuration.query.query
+    without ast.literal_eval — handles f-strings and variable references."""
+    import ast
+
+    try:
+        for i, key in enumerate(dict_node.keys):
+            if not (isinstance(key, ast.Constant) and key.value == "query"):
+                continue
+            inner = dict_node.values[i]
+            if not isinstance(inner, ast.Dict):
+                continue
+            for j, inner_key in enumerate(inner.keys):
+                if isinstance(inner_key, ast.Constant) and inner_key.value == "query":
+                    return _try_eval_str_node(inner.values[j], var_map)
+    except Exception:
+        pass
+    return None
+
+
 def _extract_sql_from_python(
     source: str,
     file_dir: "Path",
@@ -664,13 +764,16 @@ def _extract_sql_from_python(
 ) -> "dict[str, str]":
     """Return {task_id: sql_text} extracted from a Python DAG source file.
 
-    Strategy 1 — AST walk: finds BigQueryOperator / BigQueryInsertJobOperator calls,
-    resolves sql= string literals, variable references, and .sql file paths.
-    Strategy 2 — regex fallback: triple-quoted strings containing SQL keywords.
+    Pass 1 — build variable maps (str, dict, list) from module-level assignments,
+              including string concat, os.path.join, f-strings, and .format().
+    Pass 2 — extract DAG(template_searchpath=...) to extend SQL search roots.
+    Pass 3 — walk all Call nodes; handle sql=/bql= (str, list, variable),
+              configuration= (literal dict, variable, and AST-walked dicts with
+              f-strings), {% include %} directives, and plain .sql paths.
+    Fallback — regex scan for triple-quoted SQL strings.
 
     path_reader: optional callback(repo_relative_path) -> file_content | None.
-    When supplied (git mode), unresolved file paths are read via this callback instead
-    of the local filesystem.
+    Used in git mode to read files from git history when they are not on disk.
     """
     import ast
 
@@ -679,93 +782,172 @@ def _extract_sql_from_python(
     try:
         tree = ast.parse(source)
 
-        # Build module-level variable map to resolve sql=VARIABLE references
-        var_map: dict[str, str] = {}
+        # ── Pass 1: build variable maps ──────────────────────────────────────
+        var_map:      dict[str, str]   = {}  # name -> str value
+        dict_var_map: dict[str, dict]  = {}  # name -> dict (for configuration=VAR)
+        list_var_map: dict[str, list]  = {}  # name -> list[str] (for sql=[...])
+
         for node in ast.walk(tree):
-            if (
+            if not (
                 isinstance(node, ast.Assign)
                 and len(node.targets) == 1
                 and isinstance(node.targets[0], ast.Name)
-                and isinstance(node.value, ast.Constant)
-                and isinstance(node.value.value, str)
             ):
-                var_map[node.targets[0].id] = node.value.value
+                continue
+            name = node.targets[0].id
+            val  = node.value
 
+            if isinstance(val, ast.Dict):
+                try:
+                    dict_var_map[name] = ast.literal_eval(val)
+                except Exception:
+                    pass
+            elif isinstance(val, ast.List):
+                strings = []
+                for elt in val.elts:
+                    s = _try_eval_str_node(elt, var_map)
+                    if s:
+                        strings.append(s)
+                if strings:
+                    list_var_map[name] = strings
+            else:
+                s = _try_eval_str_node(val, var_map)
+                if s:
+                    var_map[name] = s
+
+        # ── Pass 2: extract template_searchpath from DAG() constructor ────────
+        template_searchpaths: list[Path] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            func_name = (
+                func.id   if isinstance(func, ast.Name)      else
+                func.attr if isinstance(func, ast.Attribute) else ""
+            )
+            if func_name != "DAG":
+                continue
+            for kw in node.keywords:
+                if kw.arg != "template_searchpath":
+                    continue
+                raw_paths: list[str] = []
+                if isinstance(kw.value, ast.List):
+                    for elt in kw.value.elts:
+                        s = _try_eval_str_node(elt, var_map)
+                        if s:
+                            raw_paths.append(s)
+                else:
+                    s = _try_eval_str_node(kw.value, var_map)
+                    if s:
+                        raw_paths.append(s)
+                for rp in raw_paths:
+                    p = Path(rp)
+                    resolved = (file_dir / p).resolve() if not p.is_absolute() else p
+                    template_searchpaths.append(resolved)
+
+        # ── Helpers ───────────────────────────────────────────────────────────
+        def _resolve_sql_path(path_str: str) -> "str | None":
+            """Find a .sql file by searching file_dir, template_searchpaths, parents."""
+            path_str = path_str.strip().lstrip("/")
+            search_bases: list[Path] = (
+                [file_dir] + template_searchpaths + list(file_dir.parents)
+            )
+            for base in search_bases:
+                candidate = (base / path_str).resolve()
+                if candidate.is_file():
+                    return candidate.read_text(encoding="utf-8", errors="replace")
+            if path_reader is not None:
+                return path_reader(path_str)
+            return None
+
+        def _resolve_sql_val(sql_str: str) -> "str | None":
+            """Resolve a raw sql= value: include directive, .sql path, or inline SQL."""
+            s = sql_str.strip()
+            # Jinja {% include 'path.sql' %}
+            m = re.search(r"""{%-?\s*include\s+['"]([^'"]+)['"]\s*-?%}""", s)
+            if m:
+                return _resolve_sql_path(m.group(1))
+            # Plain .sql file path (may contain __VAR__ from f-string resolution)
+            if s.endswith(".sql"):
+                content = _resolve_sql_path(s)
+                if content:
+                    return content
+                # If __VAR__ is in the path, strip it and try just the filename
+                if "__VAR__" in s:
+                    filename = Path(s).name.replace("__VAR__", "")
+                    if filename.endswith(".sql"):
+                        return _resolve_sql_path(filename)
+                return None
+            # Inline SQL
+            if _looks_like_sql(s):
+                return s
+            return None
+
+        # ── Pass 3: walk all Call nodes ───────────────────────────────────────
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
 
-            tid: str | None = None
-            sql_val: str | None = None
+            tid:      str | None   = None
+            sql_vals: list[str]    = []
 
             for kw in node.keywords:
-                if kw.arg == "task_id" and isinstance(kw.value, ast.Constant):
-                    tid = str(kw.value.value)
+                # task_id — resolve even when it's a variable or f-string
+                if kw.arg == "task_id":
+                    s = _try_eval_str_node(kw.value, var_map)
+                    if s:
+                        tid = s
 
+                # sql= / bql= — string, list, or variable
                 if kw.arg in ("sql", "bql"):
-                    if isinstance(kw.value, ast.Constant):
-                        sql_val = str(kw.value.value)
-                    elif isinstance(kw.value, ast.Name) and kw.value.id in var_map:
-                        sql_val = var_map[kw.value.id]
+                    if isinstance(kw.value, ast.List):
+                        for elt in kw.value.elts:
+                            s = _try_eval_str_node(elt, var_map)
+                            if s:
+                                sql_vals.append(s)
+                    elif isinstance(kw.value, ast.Name) and kw.value.id in list_var_map:
+                        sql_vals.extend(list_var_map[kw.value.id])
+                    else:
+                        s = _try_eval_str_node(kw.value, var_map)
+                        if s:
+                            sql_vals.append(s)
 
-                # BigQueryInsertJobOperator: configuration={'query': {'query': '...'}}
-                if kw.arg == "configuration" and isinstance(kw.value, ast.Dict):
-                    try:
-                        cfg = ast.literal_eval(kw.value)
-                        # Direct path: cfg["query"]["query"] may be a .sql file path or
-                        # a {% include %} string — extract_sql won't return these because
-                        # they contain no SQL keywords, so grab the raw value first.
-                        _raw_q = (cfg.get("query") or {}).get("query", "")
-                        if isinstance(_raw_q, str) and _raw_q.strip():
-                            sql_val = sql_val or _raw_q.strip()
-                        # Fall back to extract_sql for actual inline SQL
-                        if not sql_val:
+                # configuration= — literal dict, variable, or AST-walked dict
+                if kw.arg == "configuration":
+                    raw_q: str | None = None
+                    if isinstance(kw.value, ast.Name) and kw.value.id in dict_var_map:
+                        cfg = dict_var_map[kw.value.id]
+                        raw_q = (cfg.get("query") or {}).get("query", "") or None
+                        if not raw_q:
                             from core.sql_formatter import extract_sql as _exsql
-                            extracted = _exsql(cfg)
-                            if extracted:
-                                sql_val = extracted
-                    except Exception:
-                        pass
+                            raw_q = _exsql(cfg)
+                    elif isinstance(kw.value, ast.Dict):
+                        try:
+                            cfg = ast.literal_eval(kw.value)
+                            raw_q = (cfg.get("query") or {}).get("query", "") or None
+                            if not raw_q:
+                                from core.sql_formatter import extract_sql as _exsql
+                                raw_q = _exsql(cfg)
+                        except Exception:
+                            # literal_eval fails on f-strings / variable refs —
+                            # walk the AST directly
+                            raw_q = _extract_cfg_query_from_ast(kw.value, var_map)
+                    if raw_q and isinstance(raw_q, str):
+                        sql_vals.append(raw_q.strip())
 
-            if sql_val and isinstance(sql_val, str):
-                stripped = sql_val.strip()
-                # Resolve Jinja {% include 'path/to/file.sql' %} — used by
-                # BigQueryInsertJobOperator with Airflow's template_searchpath
-                _include_m = re.search(
-                    r"""{%-?\s*include\s+['"]([^'"]+)['"]\s*-?%}""", stripped
-                )
-                if _include_m:
-                    inc_path = _include_m.group(1)
-                    sql_val = None
-                    # Try local filesystem first: relative to DAG dir, then walk up
-                    for base in (file_dir, *file_dir.parents):
-                        candidate = (base / inc_path).resolve()
-                        if candidate.is_file():
-                            sql_val = candidate.read_text(encoding="utf-8", errors="replace")
-                            break
-                    # If not found locally, try git reader (git mode)
-                    if sql_val is None and path_reader is not None:
-                        sql_val = path_reader(inc_path)
-                # Resolve plain .sql file path reference
-                elif stripped.endswith(".sql"):
-                    sql_val = None
-                    candidate = (file_dir / stripped.lstrip("/")).resolve()
-                    if candidate.is_file():
-                        sql_val = candidate.read_text(encoding="utf-8", errors="replace")
-                    elif path_reader is not None:
-                        sql_val = path_reader(stripped.lstrip("/"))
-
-                if sql_val and _looks_like_sql(sql_val):
+            for sv in sql_vals:
+                content = _resolve_sql_val(sv)
+                if content and _looks_like_sql(content):
                     if task_filter is None or tid == task_filter:
                         key = tid or f"inline_{len(results)}"
-                        results.setdefault(key, sql_val)
+                        results.setdefault(key, content)
 
     except SyntaxError:
         pass
     except Exception:
         pass
 
-    # Regex fallback for triple-quoted SQL strings
+    # ── Regex fallback: triple-quoted SQL strings ─────────────────────────────
     if not results:
         for m in re.finditer(r'(?:"""|\'\'\')([\s\S]*?)(?:"""|\'\'\')' , source):
             s = m.group(1).strip()
