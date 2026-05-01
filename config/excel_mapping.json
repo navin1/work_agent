@@ -1,15 +1,12 @@
 {
   "rps_s_fee_item_snap": {
-  "bq_table": ["mtech-daas-customer-sdata-qa.raw_cust.rps_s_fee_item_snap"],
-  "dag_names": ["eda_osr_rps_285"],
-  "mapping_columns": {
-    "target": "BQ Column Name",
-    "source": "Column Name",
-    "logic": "Column Name",
-    "logic_supplementary": ["Table/File Name", "Notes"],
-    "bq_table": "mtech-daas-customer-sdata-qa.raw_cust.rps_s_fee_item_snap",
-    "multi_row_key": "BQ Column Name",
-    "rule_id": "BQ Column Name"
-  }
+    "bq_table": ["mtech-daas-customer-sdata-qa.raw_cust.rps_s_fee_item_snap"],
+    "dag_names": ["eda_osr_rps_285"],
+    "mapping_columns": {
+      "target": "BQ Column Name",
+      "source": "Column Name",
+      "logic_supplementary": ["Table/File Name", "Notes"],
+      "multi_row_key": "BQ Column Name"
+    }
   }
 }

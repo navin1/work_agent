@@ -179,7 +179,7 @@ BATCH / FOLDER VALIDATION RULES:
   THREE-STEP flow (NOT validate_mapping_folder) so the user sees progress after each file:
 
   STEP 1 — discover_mapping_files(folder_path=... | gcs_path=... | git_folder=...)
-    Returns a list of {file_name, dag_id} entries. Auto-ingests any new files.
+    Returns a list of {{file_name, dag_id}} entries. Auto-ingests any new files.
     After this call, tell the user: "Found X files to validate: [list names]. Starting now..."
 
   STEP 2 — For EACH file in the list, call validate_mapping_rules() one at a time:
@@ -196,12 +196,17 @@ BATCH / FOLDER VALIDATION RULES:
   "run on all mappings", "validate all excel files", "validate all in <path>".
 - Source selection for discover_mapping_files:
     Local folder:  discover_mapping_files(folder_path="/path/to/mappings/")
+    Default local: discover_mapping_files()  ← uses LOCAL_MAPPING_FOLDER from .env if set
     GCS:           discover_mapping_files(gcs_path="gs://bucket/mappings/")
     Git folder:    discover_mapping_files(git_folder="config/mappings", git_ref="main")
 - source_mode / composer_env / git_ref passed to validate_mapping_rules and export_mapping_results
   control WHERE the SQL is read from (same rules as the single-file SOURCE MODE section above).
 - DAG id per file comes from discover_mapping_files (read from excel_mapping.json automatically).
-  If dag_id is null for a file, still validate it — rules will be NOT_EVALUATED.
+  If dag_id is null for a file (configured: false), still validate it (rules will be NOT_EVALUATED)
+  AND tell the user: File <name> has no DAG configured. To fix, add an entry to
+  config/excel_mapping.json with keys dag_names and bq_table under the file stem, e.g.:
+    "<file_stem>": {{"dag_names": ["<dag_id>"], "bq_table": ["<project.dataset.table>"]}}
+  Also suggest setting LOCAL_MAPPING_FOLDER in .env to avoid specifying folder_path each time.
 - env_label for export_mapping_results: use composer_env value (qa/prod/uat) for composer mode,
   "local" for local mode, or the git_ref value for git mode.
 - NEVER use validate_mapping_folder for new batch requests — it gives no progress visibility.

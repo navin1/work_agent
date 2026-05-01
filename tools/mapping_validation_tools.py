@@ -18,6 +18,11 @@ from core.sql_formatter import strip_jinja
 # ── L1 in-session cache (avoids repeated file reads within one session) ───────
 _verdict_cache: dict[str, dict] = {}
 
+# ── Session-level full-result cache for _do_validate_mapping ─────────────────
+# Keyed by (file_stem, source_mode, dag_id, task_id, filter, composer_env, git_ref, local_dag_path)
+# Lets export_mapping_results skip re-fetching SQL / re-running the pipeline.
+_result_cache: dict[tuple, dict] = {}
+
 
 # ── Column role priority lists ────────────────────────────────────────────────
 
@@ -1337,6 +1342,13 @@ def _do_validate_mapping(
 	git_repo_path: str = None,
 	git_ref: str = None,
 ) -> dict:
+	# ── Session-level result cache (skip re-fetch + re-eval when result already built) ──
+	file_stem = Path(mapping_file_name).stem.lower()
+	_rkey = (file_stem, source_mode, dag_id, task_id, target_column_filter,
+	          composer_env, git_ref, local_dag_path)
+	if not force_refresh and _rkey in _result_cache:
+		return _result_cache[_rkey]
+
 	start = time.time()
 	try:
 		# ── Resolve mapping file in registry ─────────────────────────────────
@@ -1733,6 +1745,7 @@ def _do_validate_mapping(
 			row_count=summary["total"],
 			duration_ms=int((time.time() - start) * 1000),
 		)
+		_result_cache[_rkey] = result
 		return result
 
 	except Exception as exc:
@@ -1770,7 +1783,7 @@ def _discover_and_stage_excel_files(
             return staged, warnings
         for f in src.glob("*.xlsx"):
             dest = mapping_dir / f.name
-            if not dest.exists():
+            if not dest.exists() or f.stat().st_mtime > dest.stat().st_mtime:
                 shutil.copy2(f, dest)
             staged.append(dest)
 
@@ -1851,9 +1864,20 @@ def discover_mapping_files(
       3. Call export_mapping_results() with the collected file names and env_label.
 
     Exactly one of folder_path / gcs_path / git_folder must be supplied.
+    If none is supplied, LOCAL_MAPPING_FOLDER from .env is used as the default folder.
     Files not yet in the registry are auto-ingested before returning.
     """
-    from core import persistence
+    from core import persistence, config as _cfg
+
+    # Fall back to LOCAL_MAPPING_FOLDER when no source is given
+    if not folder_path and not gcs_path and not git_folder:
+        if _cfg.LOCAL_MAPPING_FOLDER:
+            folder_path = _cfg.LOCAL_MAPPING_FOLDER
+        else:
+            return safe_json({
+                "error": "No folder source supplied and LOCAL_MAPPING_FOLDER is not set in .env.",
+                "hint": "Pass folder_path=, gcs_path=, or git_folder=, or set LOCAL_MAPPING_FOLDER in .env.",
+            })
 
     staged, warnings = _discover_and_stage_excel_files(
         folder_path, gcs_path, git_folder, git_repo_path, git_ref
@@ -2146,20 +2170,13 @@ def validate_mapping_rules(
 					files_to_process.append(e.get("file_path"))
 					break
 	else:
-		# Check if it's a directory
+		# Single file lookup
 		stem_filter = mapping_file_name.lower().replace(".xlsx", "").replace(".xls", "")
-		# Could be a folder, let's see if multiple registry items match this folder pattern
-		folder_matches = [e.get("file_path") for e in registry if stem_filter in Path(e.get("file_path", "")).parent.name.lower()]
-		
-		if len(folder_matches) > 0:
-			files_to_process = folder_matches
-		else:
-			# Just a single file
-			for e in registry:
-				stem = Path(e.get("file_path", "")).stem.lower()
-				if stem_filter in stem or stem in stem_filter or stem_filter in e.get("table_name", "").lower():
-					files_to_process.append(e.get("file_path"))
-					break
+		for e in registry:
+			stem = Path(e.get("file_path", "")).stem.lower()
+			if stem_filter in stem or stem in stem_filter or stem_filter in e.get("table_name", "").lower():
+				files_to_process.append(e.get("file_path"))
+				break
 					
 	# Deduplicate
 	files_to_process = list(set(files_to_process))

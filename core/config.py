@@ -57,6 +57,9 @@ LOCAL_DAG_ROOT: str           = os.getenv("LOCAL_DAG_ROOT", "")
 LOCAL_JINJA_VARS_PATH: str    = os.getenv("LOCAL_JINJA_VARS_PATH", "")
 LOCAL_GIT_REPO_PATH: str      = os.getenv("LOCAL_GIT_REPO_PATH", "")
 LOCAL_GIT_DEFAULT_BRANCH: str = os.getenv("LOCAL_GIT_DEFAULT_BRANCH", "main")
+# Default local folder containing Excel mapping files (.xlsx).
+# Used by discover_mapping_files when no folder_path is supplied.
+LOCAL_MAPPING_FOLDER: str     = os.getenv("LOCAL_MAPPING_FOLDER", "")
 # Path within the git repo (repo-relative) to the Jinja vars JSON file.
 # When set, git mode reads this file from the git object store at the validated ref
 # instead of the host filesystem — ensures vars match the branch being checked.
