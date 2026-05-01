@@ -1,15 +1,151 @@
 """Excel/DuckDB tools — ingestion and querying of mapping and master files."""
 import json
+import re
 from core.json_utils import safe_json
 import time
+from datetime import datetime
 from pathlib import Path
 
 from langchain.tools import tool
+
+import openpyxl
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 from core import config, persistence
 from core.audit import log_audit
 from core.duckdb_manager import get_manager
 from core.sql_formatter import extract_sql
+
+# ── Validation export styling ─────────────────────────────────────────────────
+
+_VX_HEADER_FILL     = PatternFill("solid", fgColor="1F4E79")
+_VX_HEADER_FONT     = Font(color="FFFFFF", bold=True, size=11)
+_VX_STATUS_FILL: dict[str, PatternFill] = {
+    "PASS":           PatternFill("solid", fgColor="C6EFCE"),
+    "FAIL":           PatternFill("solid", fgColor="FFC7CE"),
+    "PARTIAL":        PatternFill("solid", fgColor="FFEB9C"),
+    "NOT_APPLICABLE": PatternFill("solid", fgColor="D9D9D9"),
+    "NOT_EVALUATED":  PatternFill("solid", fgColor="BDD7EE"),
+    "ERROR":          PatternFill("solid", fgColor="E2CFFF"),
+}
+_VX_PASS_FILL  = PatternFill("solid", fgColor="C6EFCE")
+_VX_FAIL_FILL  = PatternFill("solid", fgColor="FFC7CE")
+_VX_ALT_FILL   = PatternFill("solid", fgColor="F5F5F5")
+_VX_CENTER     = Alignment(horizontal="center", vertical="center")
+_VX_WRAP       = Alignment(horizontal="left",   vertical="top", wrap_text=True)
+
+
+def _vx_safe_tab(name: str, used: set) -> str:
+    name = re.sub(r'[\\/*?:\[\]]', "_", name)[:31]
+    base, i = name, 2
+    while name in used:
+        suffix = f"_{i}"
+        name = base[: 31 - len(suffix)] + suffix
+        i += 1
+    return name
+
+
+def _vx_header_row(ws, headers: list) -> None:
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=col, value=h)
+        c.fill = _VX_HEADER_FILL
+        c.font = _VX_HEADER_FONT
+        c.alignment = _VX_CENTER
+
+
+def _vx_col_widths(ws, widths: list) -> None:
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+
+def export_validation_excel(
+    results: list,
+    env_label: str,
+    output_dir,
+) -> Path:
+    """Build Mapping_Results_<ENV>_<YYYYMMDD_HHMMSS>.xlsx from validation results.
+
+    Args:
+        results:    List of _do_validate_mapping result dicts.
+        env_label:  Environment label used in filename (local / git / qa / prod …).
+        output_dir: Directory to write the file into.
+
+    Returns:
+        Path to the written .xlsx file.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = output_dir / f"Mapping_Results_{env_label}_{ts}.xlsx"
+
+    wb       = openpyxl.Workbook()
+    used     : set = set()
+
+    # ── Summary tab ───────────────────────────────────────────────────────────
+    ws_sum       = wb.active
+    ws_sum.title = "Summary"
+    used.add("Summary")
+
+    _vx_header_row(ws_sum, ["File Name", "Pass", "Fail", "Partial", "Not Applicable", "Not Evaluated", "Total"])
+    ws_sum.row_dimensions[1].height = 20
+
+    for r, res in enumerate(results, 2):
+        s    = res.get("summary", {})
+        name = Path(res.get("mapping_file", "unknown")).stem
+        for c, val in enumerate([
+            name,
+            s.get("pass", 0), s.get("fail", 0), s.get("partial", 0),
+            s.get("not_applicable", 0), s.get("not_evaluated", 0), s.get("total", 0),
+        ], 1):
+            cell = ws_sum.cell(row=r, column=c, value=val)
+            cell.alignment = _VX_CENTER if c > 1 else Alignment(horizontal="left")
+            if r % 2 == 0:
+                cell.fill = _VX_ALT_FILL
+        ws_sum.cell(row=r, column=2).fill = _VX_PASS_FILL
+        ws_sum.cell(row=r, column=3).fill = _VX_FAIL_FILL
+
+    _vx_col_widths(ws_sum, [35, 8, 8, 10, 16, 16, 8])
+    ws_sum.freeze_panes = "A2"
+
+    # ── Per-file tabs ─────────────────────────────────────────────────────────
+    for res in results:
+        stem     = Path(res.get("mapping_file", "unknown")).stem
+        tab      = _vx_safe_tab(stem, used)
+        used.add(tab)
+        ws       = wb.create_sheet(title=tab)
+        _vx_header_row(ws, ["Column", "Status", "Confidence", "Reason", "Evidence"])
+        ws.row_dimensions[1].height = 20
+
+        row = 2
+        for group in res.get("bq_table_groups", []):
+            for rule in group.get("rules", []):
+                verdict = (rule.get("verdict") or "").upper()
+                sfill   = _VX_STATUS_FILL.get(verdict)
+                afill   = _VX_ALT_FILL if row % 2 == 0 else None
+
+                for col_name in (rule.get("target_columns") or [""]):
+                    for ci, (val, aln) in enumerate([
+                        (col_name,                       Alignment(horizontal="left")),
+                        (verdict,                        _VX_CENTER),
+                        (rule.get("confidence_tier",""), _VX_CENTER),
+                        (rule.get("reason",         ""), _VX_WRAP),
+                        (rule.get("evidence",       ""), _VX_WRAP),
+                    ], 1):
+                        cell = ws.cell(row=row, column=ci, value=val)
+                        cell.alignment = aln
+                        if ci == 2 and sfill:
+                            cell.fill = sfill
+                        elif afill:
+                            cell.fill = afill
+                    ws.row_dimensions[row].height = 30
+                    row += 1
+
+        _vx_col_widths(ws, [28, 16, 13, 65, 55])
+        ws.freeze_panes = "A2"
+
+    wb.save(out_path)
+    return out_path
 
 
 def _dag_meta_for_path(file_path: str) -> dict:

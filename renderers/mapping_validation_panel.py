@@ -110,7 +110,7 @@ def _render_download_button(results: list[dict], env_label: str, key: str) -> No
 	"""Generate an Excel workbook from results and show a Streamlit download button."""
 	try:
 		import tempfile
-		from utils.excel_export import export_validation_excel
+		from tools.excel_tools import export_validation_excel
 
 		with tempfile.TemporaryDirectory() as tmp:
 			out        = export_validation_excel(results, env_label, tmp)

@@ -1866,7 +1866,7 @@ def validate_mapping_folder(
     import json, time
     from core import config, persistence
     from core.duckdb_manager import get_manager
-    from utils.excel_export import export_validation_excel
+    from tools.excel_tools import export_validation_excel
 
     start = time.time()
 
