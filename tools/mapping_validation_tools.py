@@ -1855,13 +1855,18 @@ def discover_mapping_files(
     git_folder: str = None,
     git_repo_path: str = None,
     git_ref: str = None,
+    source_mode: str = "local",
+    composer_env: str = None,
+    local_dag_path: str = None,
 ) -> str:
     """Discover all .xlsx mapping files in a folder and return their names + configured DAG ids.
 
-    Use this as the FIRST step in a batch validation flow:
-      1. Call discover_mapping_files() to get the file list.
-      2. Call validate_mapping_rules() once per file using the dag_id provided.
-      3. Call export_mapping_results() with the collected file names and env_label.
+    The UI automatically runs the per-file validation loop after this call — do NOT call
+    validate_mapping_rules or export_mapping_results manually for batch requests.
+
+    source_mode / composer_env / local_dag_path control WHERE SQL is read from during
+    validation (same semantics as validate_mapping_rules). Include them here so the UI
+    batch loop can use them automatically.
 
     Exactly one of folder_path / gcs_path / git_folder must be supplied.
     If none is supplied, LOCAL_MAPPING_FOLDER from .env is used as the default folder.
@@ -1908,9 +1913,16 @@ def discover_mapping_files(
         })
 
     return safe_json({
-        "files":    files,
-        "total":    len(files),
-        "warnings": warnings,
+        "files":          files,
+        "total":          len(files),
+        "warnings":       warnings,
+        # Pass-through params consumed by the UI batch loop (not used by discovery itself)
+        "source_mode":    source_mode,
+        "composer_env":   composer_env,
+        "local_dag_path": local_dag_path,
+        "git_repo_path":  git_repo_path,
+        "git_ref":        git_ref,
+        "env_label":      composer_env or git_ref or source_mode or "local",
     })
 
 

@@ -380,9 +380,7 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
     if "browse_git" in tools_called:
         _fb.render_file_browser(tools_called["browse_git"])
 
-    # In batch mode (multiple per-file calls + export), render each file compact —
-    # the full Mapping Details appear in render_export_result's consolidated view.
-    # In single-file mode (no export call), render full with download.
+    # Single-file validate_mapping_rules (agent-driven, non-batch)
     _has_export = "export_mapping_results" in tools_called
     _batch_mode = len(validate_mapping_calls) > 1 or _has_export
     for _vm_output in validate_mapping_calls:
@@ -393,6 +391,120 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
 
     if _has_export:
         _mvp.render_export_result(tools_called["export_mapping_results"])
+
+    # Batch trigger: agent called discover_mapping_files → hand off to Streamlit loop
+    if "discover_mapping_files" in tools_called and not is_history:
+        import json as _json
+        try:
+            _disc = _json.loads(tools_called["discover_mapping_files"])
+            if _disc.get("files"):
+                st.session_state["_batch_pending"] = _disc
+        except Exception:
+            pass
+
+
+# ── Batch validation loop (Streamlit-controlled, real-time progress) ─────────
+
+def _run_batch_validation(batch: dict) -> None:
+    """Run per-file validation with real-time st.status() progress, then show consolidated view."""
+    import json
+    from pathlib import Path
+
+    files          = batch.get("files", [])
+    source_mode    = batch.get("source_mode", "local")
+    composer_env   = batch.get("composer_env")
+    local_dag_path = batch.get("local_dag_path")
+    git_repo_path  = batch.get("git_repo_path")
+    git_ref        = batch.get("git_ref")
+    env_label      = batch.get("env_label", "local")
+    warnings       = batch.get("warnings", [])
+
+    from tools.mapping_validation_tools import _do_validate_mapping
+    from tools.excel_tools import export_validation_excel
+    from core import config as _cfg
+
+    for w in warnings:
+        st.warning(w)
+
+    running = {
+        "pass": 0, "fail": 0, "partial": 0,
+        "not_applicable": 0, "not_evaluated": 0, "total": 0,
+    }
+    validated: list[dict] = []
+
+    # Consolidated scorecard — updated after every file
+    score_placeholder = st.empty()
+
+    def _refresh_scorecards() -> None:
+        with score_placeholder.container():
+            st.markdown("**📊 Consolidated Validation Status**")
+            c1, c2, c3, c4, c5, c6 = st.columns(6)
+            c1.metric("🟢 PASS",     running["pass"])
+            c2.metric("🔴 FAIL",     running["fail"])
+            c3.metric("🟡 PARTIAL",  running["partial"])
+            c4.metric("⚪ N/A",      running["not_applicable"])
+            c5.metric("🔵 Not Eval", running["not_evaluated"])
+            c6.metric("Total",       running["total"])
+
+    _refresh_scorecards()
+
+    with st.status(f"Validating {len(files)} file(s)…", expanded=True) as _status:
+        for idx, file_info in enumerate(files):
+            file_name = file_info.get("file_name", "")
+            dag_id    = file_info.get("dag_id")
+
+            _status.update(label=f"⏳ Processing {file_name}  ({idx + 1}/{len(files)})…")
+            st.markdown(
+                f'<div style="background:#EFF6FF;border-left:4px solid #1D4ED8;'
+                f'padding:8px 14px;border-radius:4px;margin:4px 0 8px;">'
+                f'<b>⏳ Processing: {file_name}</b></div>',
+                unsafe_allow_html=True,
+            )
+
+            result = _do_validate_mapping(
+                file_name, composer_env, dag_id,
+                None, None, False,
+                source_mode, local_dag_path, git_repo_path, git_ref,
+            )
+            validated.append(result)
+
+            s = result.get("summary") or {}
+            for k in running:
+                running[k] += s.get(k, 0)
+
+            _refresh_scorecards()
+
+            st.markdown(
+                f'<div style="background:#F0FFF4;border-left:4px solid #1B8A3E;'
+                f'padding:8px 14px;border-radius:4px;margin:4px 0 8px;">'
+                f'<b>✅ {file_name}</b> — '
+                f'{s.get("total",0)} rules: '
+                f'{s.get("pass",0)} PASS · {s.get("fail",0)} FAIL · '
+                f'{s.get("partial",0)} PARTIAL · {s.get("not_applicable",0)} N/A · '
+                f'{s.get("not_evaluated",0)} not eval</div>',
+                unsafe_allow_html=True,
+            )
+
+        _status.update(
+            label=f"✅ Validated {len(files)} file(s)", state="complete", expanded=False
+        )
+
+    # Generate Excel and build the export payload for render_export_result
+    export_payload: dict = {
+        "is_export":       True,
+        "files_exported":  len(validated),
+        "overall_summary": running,
+        "results":         validated,   # full results — render_export_result handles them
+    }
+    try:
+        out = export_validation_excel(validated, env_label, Path(_cfg.EXPORTS_ROOT))
+        export_payload["export_path"] = str(out)
+        export_payload["file_name"]   = out.name
+    except Exception as exc:
+        st.warning(f"Excel export failed: {exc}")
+
+    st.divider()
+    _mvp.render_export_result(export_payload)
 
 
 # ── Chat input & state ────────────────────────────────────────────────────────
@@ -434,6 +546,14 @@ for _i, msg in enumerate(st.session_state.messages):
         if "panels" in msg:
                 is_hist = (_i != _last_assistant_idx) or bool(_active_prompt)
                 dispatch_renderers(msg["panels"], is_history=is_hist)
+
+
+# ── Batch validation (triggered after discover_mapping_files, no active prompt) ──
+
+if st.session_state.get("_batch_pending") and not _active_prompt:
+    _batch = st.session_state.pop("_batch_pending")
+    with st.chat_message("assistant"):
+        _run_batch_validation(_batch)
 
 
 # ── Process active prompt ─────────────────────────────────────────────────────

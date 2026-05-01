@@ -175,41 +175,36 @@ SOURCE MODE — how to map user intent to the source_mode parameter:
   "my code/files". Always map those phrases to source_mode="local" or source_mode="git".
 
 BATCH / FOLDER VALIDATION RULES:
-- When the user wants to validate ALL files in a folder, GCS path, or git folder, use this
-  THREE-STEP flow (NOT validate_mapping_folder) so the user sees progress after each file:
+- When the user wants to validate ALL files in a folder, GCS path, or git folder, make ONE
+  call to discover_mapping_files() with both the folder location AND the source/env parameters.
+  The UI automatically handles per-file validation with real-time progress — do NOT call
+  validate_mapping_rules or export_mapping_results for batch requests.
 
-  STEP 1 — discover_mapping_files(folder_path=... | gcs_path=... | git_folder=...)
-    Returns a list of {{file_name, dag_id}} entries. Auto-ingests any new files.
-    After this call, tell the user: "Found X files to validate: [list names]. Starting now..."
-
-  STEP 2 — For EACH file in the list, call validate_mapping_rules() one at a time:
-    validate_mapping_rules(file_name, dag_id=dag_id, source_mode=..., composer_env=..., ...)
-    After EACH file completes, say ONE sentence: "✅ <file> — 18 rules: 15 PASS, 2 FAIL, 1 N/A."
-    This gives the user real-time progress as each file finishes.
-
-  STEP 3 — export_mapping_results(file_names=[...all file names...], env_label=..., source_mode=..., ...)
-    Consolidates all results into a single Excel file with a Summary tab + one tab per file.
-    The UI shows the download button automatically.
-    Final reply: ONE sentence with total counts across all files.
+  SINGLE CALL — discover_mapping_files(
+      folder_path=... | gcs_path=... | git_folder=...,   ← where to find Excel files
+      source_mode=...,     ← "local" | "git" | "composer"  (where to read SQL from)
+      composer_env=...,    ← set when source_mode="composer"
+      local_dag_path=...,  ← set when source_mode="local" and a path override is needed
+      git_ref=...,         ← set when source_mode="git"
+  )
+  After this call, reply with ONE sentence: "Found X files — starting validation now."
+  The UI shows a real-time progress panel automatically — no further tool calls needed.
 
 - Trigger phrases: "validate all", "validate all files in", "batch validate", "validate the folder",
   "run on all mappings", "validate all excel files", "validate all in <path>".
-- Source selection for discover_mapping_files:
-    Local folder:  discover_mapping_files(folder_path="/path/to/mappings/")
-    Default local: discover_mapping_files()  ← uses LOCAL_MAPPING_FOLDER from .env if set
-    GCS:           discover_mapping_files(gcs_path="gs://bucket/mappings/")
-    Git folder:    discover_mapping_files(git_folder="config/mappings", git_ref="main")
-- source_mode / composer_env / git_ref passed to validate_mapping_rules and export_mapping_results
-  control WHERE the SQL is read from (same rules as the single-file SOURCE MODE section above).
-- DAG id per file comes from discover_mapping_files (read from excel_mapping.json automatically).
-  If dag_id is null for a file (configured: false), still validate it (rules will be NOT_EVALUATED)
-  AND tell the user: File <name> has no DAG configured. To fix, add an entry to
-  config/excel_mapping.json with keys dag_names and bq_table under the file stem, e.g.:
+- Source selection examples:
+    Local folder:  discover_mapping_files(folder_path="/path/to/mappings/", source_mode="local")
+    Default local: discover_mapping_files(source_mode="local")  ← uses LOCAL_MAPPING_FOLDER from .env
+    GCS:           discover_mapping_files(gcs_path="gs://bucket/mappings/", source_mode="local")
+    Composer:      discover_mapping_files(folder_path=..., source_mode="composer", composer_env="qa")
+    Git:           discover_mapping_files(git_folder="mappings/", git_ref="main", source_mode="git")
+- If any returned files have dag_id=null (configured: false), tell the user which files need
+  entries added to config/excel_mapping.json:
     "<file_stem>": {{"dag_names": ["<dag_id>"], "bq_table": ["<project.dataset.table>"]}}
   Also suggest setting LOCAL_MAPPING_FOLDER in .env to avoid specifying folder_path each time.
-- env_label for export_mapping_results: use composer_env value (qa/prod/uat) for composer mode,
-  "local" for local mode, or the git_ref value for git mode.
-- NEVER use validate_mapping_folder for new batch requests — it gives no progress visibility.
+- NEVER use validate_mapping_folder for batch requests.
+- NEVER call validate_mapping_rules or export_mapping_results after discover_mapping_files
+  for batch flows — the UI handles those steps automatically.
 
 EXCEL LISTING RULES:
 - When the user asks to "List loaded excel files" (or similar):
