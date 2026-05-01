@@ -57,18 +57,11 @@ def render_mapping_validation(raw_json: str) -> None:
 		st.markdown(f"### Batch Validation Results: {n_files} file(s){label}")
 
 		# ── Download button ───────────────────────────────────────────────────
-		export_path = data.get("export_path")
-		if export_path:
-			from pathlib import Path as _Path
-			ep = _Path(export_path)
-			if ep.is_file():
-				st.download_button(
-					label="⬇️ Download Results Excel",
-					data=ep.read_bytes(),
-					file_name=ep.name,
-					mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-					use_container_width=False,
-				)
+		_render_download_button(
+			data.get("results", []),
+			data.get("env_label", "batch"),
+			uid,
+		)
 
 		# ── Warnings ─────────────────────────────────────────────────────────
 		for w in data.get("warnings", []):
@@ -113,6 +106,28 @@ def render_mapping_validation(raw_json: str) -> None:
 		_render_single_file_validation(data, uid)
 
 
+def _render_download_button(results: list[dict], env_label: str, key: str) -> None:
+	"""Generate an Excel workbook from results and show a Streamlit download button."""
+	try:
+		import tempfile
+		from utils.excel_export import export_validation_excel
+
+		with tempfile.TemporaryDirectory() as tmp:
+			out        = export_validation_excel(results, env_label, tmp)
+			file_bytes = out.read_bytes()
+			file_name  = out.name
+
+		st.download_button(
+			label="⬇️ Download Results Excel",
+			data=file_bytes,
+			file_name=file_name,
+			mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+			key=f"dl_{key}",
+		)
+	except Exception as exc:
+		st.caption(f"Excel export unavailable: {exc}")
+
+
 def _render_single_file_validation(data: dict, uid: str) -> None:
 	summary	= data.get("summary", {})
 	groups	 = data.get("bq_table_groups", [])
@@ -134,6 +149,9 @@ def _render_single_file_validation(data: dict, uid: str) -> None:
 	c4.metric("⚪ N/A",	 summary.get("not_applicable", 0))
 	c5.metric("🔵 No SQL", summary.get("not_evaluated", 0))
 	c6.metric("Total",	 summary.get("total",		 0))
+
+	env_label = composer_env or data.get("source_mode") or "local"
+	_render_download_button([data], env_label, uid)
 
 	low_conf = summary.get("low_confidence", 0)
 	if low_conf:
