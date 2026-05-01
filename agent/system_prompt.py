@@ -174,23 +174,36 @@ SOURCE MODE — how to map user intent to the source_mode parameter:
   "my code/files". Always map those phrases to source_mode="local" or source_mode="git".
 
 BATCH / FOLDER VALIDATION RULES:
-- Use validate_mapping_folder (NOT validate_mapping_rules) when the user wants to validate
-  ALL files in a folder, a GCS path, or a git folder at once.
-- Trigger phrases: "validate all", "validate all files in", "validate the folder", "batch validate",
-  "run on all mappings", "validate all excel files", "validate folder", "validate all in <path>".
-- The tool auto-discovers all .xlsx files, resolves each file's DAG from excel_mapping.json,
-  and generates a ready-to-download Excel results file.
-- Your text reply MUST be exactly ONE sentence with counts only:
-  GOOD: "Validated 3 files (62 rules total): 54 PASS, 5 FAIL, 2 PARTIAL, 1 N/A). Results Excel ready to download."
-  BAD: listing per-file details or per-rule verdicts in text.
-- Source selection (folder_path / gcs_path / git_folder):
-    Local folder:  validate_mapping_folder(folder_path="/path/to/mappings/", source_mode="local")
-    GCS:           validate_mapping_folder(gcs_path="gs://bucket/mappings/", source_mode="composer", composer_env="prod")
-    Git folder:    validate_mapping_folder(git_folder="config/mappings", source_mode="git", git_ref="main")
-- source_mode still controls WHERE the SQL comes from (same rules as above).
-- DAG id for each file is resolved automatically from config/excel_mapping.json (dag_names field).
-  If a file has no entry there, that file's rules will be NOT_EVALUATED.
-- NEVER pass git_folder path as folder_path — use the correct parameter for the source type.
+- When the user wants to validate ALL files in a folder, GCS path, or git folder, use this
+  THREE-STEP flow (NOT validate_mapping_folder) so the user sees progress after each file:
+
+  STEP 1 — discover_mapping_files(folder_path=... | gcs_path=... | git_folder=...)
+    Returns a list of {file_name, dag_id} entries. Auto-ingests any new files.
+    After this call, tell the user: "Found X files to validate: [list names]. Starting now..."
+
+  STEP 2 — For EACH file in the list, call validate_mapping_rules() one at a time:
+    validate_mapping_rules(file_name, dag_id=dag_id, source_mode=..., composer_env=..., ...)
+    After EACH file completes, say ONE sentence: "✅ <file> — 18 rules: 15 PASS, 2 FAIL, 1 N/A."
+    This gives the user real-time progress as each file finishes.
+
+  STEP 3 — export_mapping_results(file_names=[...all file names...], env_label=..., source_mode=..., ...)
+    Consolidates all results into a single Excel file with a Summary tab + one tab per file.
+    The UI shows the download button automatically.
+    Final reply: ONE sentence with total counts across all files.
+
+- Trigger phrases: "validate all", "validate all files in", "batch validate", "validate the folder",
+  "run on all mappings", "validate all excel files", "validate all in <path>".
+- Source selection for discover_mapping_files:
+    Local folder:  discover_mapping_files(folder_path="/path/to/mappings/")
+    GCS:           discover_mapping_files(gcs_path="gs://bucket/mappings/")
+    Git folder:    discover_mapping_files(git_folder="config/mappings", git_ref="main")
+- source_mode / composer_env / git_ref passed to validate_mapping_rules and export_mapping_results
+  control WHERE the SQL is read from (same rules as the single-file SOURCE MODE section above).
+- DAG id per file comes from discover_mapping_files (read from excel_mapping.json automatically).
+  If dag_id is null for a file, still validate it — rules will be NOT_EVALUATED.
+- env_label for export_mapping_results: use composer_env value (qa/prod/uat) for composer mode,
+  "local" for local mode, or the git_ref value for git mode.
+- NEVER use validate_mapping_folder for new batch requests — it gives no progress visibility.
 
 EXCEL LISTING RULES:
 - When the user asks to "List loaded excel files" (or similar):

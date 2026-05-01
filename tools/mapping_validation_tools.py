@@ -1836,6 +1836,117 @@ def _discover_and_stage_excel_files(
 
 
 @tool
+def discover_mapping_files(
+    folder_path: str = None,
+    gcs_path: str = None,
+    git_folder: str = None,
+    git_repo_path: str = None,
+    git_ref: str = None,
+) -> str:
+    """Discover all .xlsx mapping files in a folder and return their names + configured DAG ids.
+
+    Use this as the FIRST step in a batch validation flow:
+      1. Call discover_mapping_files() to get the file list.
+      2. Call validate_mapping_rules() once per file using the dag_id provided.
+      3. Call export_mapping_results() with the collected file names and env_label.
+
+    Exactly one of folder_path / gcs_path / git_folder must be supplied.
+    Files not yet in the registry are auto-ingested before returning.
+    """
+    from core import persistence
+
+    staged, warnings = _discover_and_stage_excel_files(
+        folder_path, gcs_path, git_folder, git_repo_path, git_ref
+    )
+
+    if not staged:
+        return safe_json({
+            "error": "No .xlsx files found.",
+            "warnings": warnings,
+        })
+
+    try:
+        from tools.excel_tools import ingest_excel_files
+        ingest_excel_files()
+    except Exception:
+        pass
+
+    excel_map = persistence.get_excel_mapping()
+    files = []
+    for p in staged:
+        stem     = p.stem
+        cfg      = excel_map.get(stem) or excel_map.get(stem.lower()) or {}
+        dag_list = cfg.get("dag_names") or []
+        files.append({
+            "file_name": p.name,
+            "dag_id":    dag_list[0] if dag_list else None,
+            "configured": bool(dag_list),
+        })
+
+    return safe_json({
+        "files":    files,
+        "total":    len(files),
+        "warnings": warnings,
+    })
+
+
+@tool
+def export_mapping_results(
+    file_names: list,
+    env_label: str = "local",
+    composer_env: str = None,
+    source_mode: str = "composer",
+    local_dag_path: str = None,
+    git_repo_path: str = None,
+    git_ref: str = None,
+) -> str:
+    """Generate a consolidated Excel file from previously validated mapping files.
+
+    Call this AFTER validate_mapping_rules() has been called for each file.
+    Results are pulled from the validation cache so no extra LLM calls are made.
+
+    Args:
+        file_names:  List of Excel file names that were validated (e.g. ["rps_s_fee_item_snap.xlsx"]).
+        env_label:   Label used in the Excel filename (local / git / qa / prod …).
+        composer_env / source_mode / local_dag_path / git_repo_path / git_ref:
+                     Same values used when validating, needed to reconstruct results from cache.
+    """
+    from core import config
+    from tools.excel_tools import export_validation_excel
+
+    results = []
+    for fname in file_names:
+        res = _do_validate_mapping(
+            fname,
+            composer_env,
+            None,   # dag_id resolved from excel_mapping.json inside _do_validate_mapping
+            None,   # task_id
+            None,   # target_column_filter
+            False,  # force_refresh — always use cache here
+            source_mode,
+            local_dag_path,
+            git_repo_path,
+            git_ref,
+        )
+        results.append(res)
+
+    try:
+        out = export_validation_excel(results, env_label, Path(config.EXPORTS_ROOT))
+        return safe_json({
+            "is_export":       True,
+            "export_path":     str(out),
+            "file_name":       out.name,
+            "files_exported":  len(results),
+            "overall_summary": {
+                k: sum(r.get("summary", {}).get(k, 0) for r in results)
+                for k in ("total", "pass", "fail", "partial", "not_applicable", "not_evaluated")
+            },
+        })
+    except Exception as exc:
+        return safe_json({"error": f"Excel export failed: {exc}"})
+
+
+@tool
 def validate_mapping_folder(
     folder_path: str = None,
     gcs_path: str = None,

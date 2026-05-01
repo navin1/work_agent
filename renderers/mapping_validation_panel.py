@@ -24,6 +24,41 @@ _CONFIDENCE = {
 _render_count = 0
 
 
+def render_export_result(raw_json: str) -> None:
+	"""Render the output of export_mapping_results — download button + overall summary."""
+	try:
+		data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+	except Exception:
+		return
+
+	if data.get("error"):
+		st.error(data["error"])
+		return
+
+	from pathlib import Path as _Path
+	export_path = data.get("export_path")
+	if export_path:
+		ep = _Path(export_path)
+		if ep.is_file():
+			st.download_button(
+				label="⬇️ Download Results Excel",
+				data=ep.read_bytes(),
+				file_name=ep.name,
+				mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+				key=f"dl_export_{ep.stem}",
+			)
+
+	ovr = data.get("overall_summary", {})
+	if ovr:
+		c1, c2, c3, c4, c5, c6 = st.columns(6)
+		c1.metric("🟢 PASS",    ovr.get("pass", 0))
+		c2.metric("🔴 FAIL",    ovr.get("fail", 0))
+		c3.metric("🟡 PARTIAL", ovr.get("partial", 0))
+		c4.metric("⚪ N/A",     ovr.get("not_applicable", 0))
+		c5.metric("🔵 No SQL",  ovr.get("not_evaluated", 0))
+		c6.metric("Total",      ovr.get("total", 0))
+
+
 def render_mapping_validation(raw_json: str) -> None:
 	global _render_count
 	_render_count += 1

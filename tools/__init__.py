@@ -70,6 +70,8 @@ from tools.browse_tools import (
 from tools.mapping_validation_tools import (
     validate_mapping_rules,
     validate_mapping_folder,
+    discover_mapping_files,
+    export_mapping_results,
 )
 
 ALL_TOOLS = [
@@ -125,6 +127,8 @@ ALL_TOOLS = [
     browse_git,
     # Mapping validation
     validate_mapping_rules,
+    discover_mapping_files,
+    export_mapping_results,
     validate_mapping_folder,
     # User
     save_query,

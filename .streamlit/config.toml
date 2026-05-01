@@ -1,0 +1,7 @@
+[server]
+# Increase timeout for long-running batch validation requests
+maxUploadSize = 200
+enableWebsocketCompression = true
+
+[browser]
+serverPort = 8501

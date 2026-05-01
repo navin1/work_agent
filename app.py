@@ -382,6 +382,9 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
     if "validate_mapping_folder" in tools_called:
         _mvp.render_mapping_validation(tools_called["validate_mapping_folder"])
 
+    if "export_mapping_results" in tools_called:
+        _mvp.render_export_result(tools_called["export_mapping_results"])
+
 
 # ── Chat input & state ────────────────────────────────────────────────────────
 
