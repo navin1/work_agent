@@ -41,6 +41,7 @@ def _render_banner(file_name: str, completed: bool) -> None:
 
 
 def _render_scorecards(summary: dict) -> None:
+    summary = summary or {}
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("🟢 PASS",     summary.get("pass",           0))
     c2.metric("🔴 FAIL",     summary.get("fail",           0))
