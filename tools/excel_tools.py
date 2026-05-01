@@ -19,15 +19,16 @@ from core.sql_formatter import extract_sql
 
 # ── Validation export styling ─────────────────────────────────────────────────
 
-_VX_HEADER_FILL     = PatternFill("solid", fgColor="1F4E79")
-_VX_HEADER_FONT     = Font(color="FFFFFF", bold=True, size=11)
-_VX_STATUS_FILL: dict[str, PatternFill] = {
-    "PASS":           PatternFill("solid", fgColor="C6EFCE"),
-    "FAIL":           PatternFill("solid", fgColor="FFC7CE"),
-    "PARTIAL":        PatternFill("solid", fgColor="FFEB9C"),
-    "NOT_APPLICABLE": PatternFill("solid", fgColor="D9D9D9"),
-    "NOT_EVALUATED":  PatternFill("solid", fgColor="BDD7EE"),
-    "ERROR":          PatternFill("solid", fgColor="E2CFFF"),
+_VX_HEADER_FILL     = PatternFill("solid", fgColor="4472C4")
+_VX_HEADER_FONT     = Font(bold=True, color="FFFFFF", name="Calibri", size=11)
+_VX_DATA_FONT       = Font(name="Courier New", size=11)
+_VX_STATUS_EMOJI: dict[str, str] = {
+    "PASS":           "🟢 PASS",
+    "FAIL":           "🔴 FAIL",
+    "PARTIAL":        "🟡 PARTIAL",
+    "NOT_APPLICABLE": "⚪ N/A",
+    "NOT_EVALUATED":  "🔵 NOT EVALUATED",
+    "ERROR":          "🟣 ERROR",
 }
 _VX_PASS_FILL  = PatternFill("solid", fgColor="C6EFCE")
 _VX_FAIL_FILL  = PatternFill("solid", fgColor="FFC7CE")
@@ -120,23 +121,22 @@ def export_validation_excel(
         row = 2
         for group in res.get("bq_table_groups", []):
             for rule in group.get("rules", []):
-                verdict = (rule.get("verdict") or "").upper()
-                sfill   = _VX_STATUS_FILL.get(verdict)
-                afill   = _VX_ALT_FILL if row % 2 == 0 else None
+                verdict       = (rule.get("verdict") or "").upper()
+                status_label  = _VX_STATUS_EMOJI.get(verdict, verdict)
+                afill         = _VX_ALT_FILL if row % 2 == 0 else None
 
                 for col_name in (rule.get("target_columns") or [""]):
                     for ci, (val, aln) in enumerate([
                         (col_name,                       Alignment(horizontal="left")),
-                        (verdict,                        _VX_CENTER),
+                        (status_label,                   _VX_CENTER),
                         (rule.get("confidence_tier",""), _VX_CENTER),
                         (rule.get("reason",         ""), _VX_WRAP),
                         (rule.get("evidence",       ""), _VX_WRAP),
                     ], 1):
                         cell = ws.cell(row=row, column=ci, value=val)
                         cell.alignment = aln
-                        if ci == 2 and sfill:
-                            cell.fill = sfill
-                        elif afill:
+                        cell.font = _VX_DATA_FONT
+                        if afill:
                             cell.fill = afill
                     ws.row_dimensions[row].height = 30
                     row += 1
