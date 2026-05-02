@@ -874,25 +874,43 @@ def _extract_sql_from_python(
                 return path_reader(path_str)
             return None
 
-        def _glob_sql_dir(dir_part: str) -> "str | None":
-            """Return concatenated content of all .sql files in dir_part.
+        def _concat_sql_files(files: "list[Path]") -> "str | None":
+            """Read and concatenate a list of .sql files."""
+            if not files:
+                return None
+            return "\n\n".join(
+                f.read_text(encoding="utf-8", errors="replace") for f in files
+            )
 
-            Used when the include/sql path contains an unresolved loop variable
-            (e.g. bq_sql/__VAR__.sql from f"bq_sql/{task_var}.sql").
-            Searches file_dir, template_searchpaths, and their parents.
+        def _glob_sql_dir(dir_part: str) -> "str | None":
+            """Return concatenated content of all .sql files found for dir_part.
+
+            Resolution order:
+            1. dir_part is a real subdirectory relative to file_dir or
+               template_searchpaths — glob *.sql directly inside it.
+            2. dir_part contains __VAR__ or does not exist — ignore it and
+               collect all *.sql files anywhere under file_dir (recursive).
+               This handles any directory name: sql/, BQsql/, queries/, etc.
             """
             dir_part = dir_part.strip().lstrip("/")
-            search_bases = [file_dir] + template_searchpaths + list(file_dir.parents)
-            for base in search_bases:
-                sql_dir = (base / dir_part).resolve()
-                if sql_dir.is_dir():
-                    files = sorted(sql_dir.glob("*.sql"))
-                    if files:
-                        return "\n\n".join(
-                            f.read_text(encoding="utf-8", errors="replace")
-                            for f in files
-                        )
-            return None
+            known_var = "__VAR__" in dir_part
+
+            if not known_var:
+                search_bases = [file_dir] + template_searchpaths + list(file_dir.parents)
+                for base in search_bases:
+                    sql_dir = (base / dir_part).resolve()
+                    if sql_dir.is_dir():
+                        files = sorted(sql_dir.glob("*.sql"))
+                        if files:
+                            return _concat_sql_files(files)
+
+            # Directory not found or name was __VAR__ — fall back to all .sql
+            # files under file_dir (recursive, depth-limited to 4 levels).
+            all_sql = sorted(file_dir.rglob("*.sql"))
+            # Skip files whose path contains __pycache__ or .git
+            all_sql = [f for f in all_sql
+                       if "__pycache__" not in str(f) and ".git" not in str(f)]
+            return _concat_sql_files(all_sql) or None
 
         def _resolve_sql_val(sql_str: str) -> "str | None":
             """Resolve a raw sql= value: include directive, .sql path, or inline SQL."""
