@@ -26,16 +26,39 @@ _render_count = 0
 
 # ── Shared primitives ─────────────────────────────────────────────────────────
 
-def _render_banner(file_name: str, completed: bool) -> None:
+def _render_banner(
+    file_name: str,
+    completed: bool,
+    dag_id: str | None = None,
+    summary: dict | None = None,
+) -> None:
     if completed:
         icon, label, bg, border = "✅", "Completed", "#F0FFF4", "#1B8A3E"
     else:
         icon, label, bg, border = "⏳", "Processing", "#EFF6FF", "#1D4ED8"
+
+    dag_part = f" &nbsp;·&nbsp; DAG: <span style='font-weight:500'>{dag_id}</span>" if dag_id else ""
+
+    counts_part = ""
+    if summary:
+        s = summary or {}
+        counts_part = (
+            f"&nbsp;&nbsp;&nbsp;&nbsp;"
+            f"🟢 {s.get('pass',0)}&nbsp;&nbsp;"
+            f"🔴 {s.get('fail',0)}&nbsp;&nbsp;"
+            f"🟡 {s.get('partial',0)}&nbsp;&nbsp;"
+            f"⚪ {s.get('not_applicable',0)}&nbsp;&nbsp;"
+            f"🔵 {s.get('not_evaluated',0)}&nbsp;&nbsp;"
+            f"<span style='font-weight:600'>Total = {s.get('total',0)}</span>"
+        )
+
     st.markdown(
         f'<div style="background:{bg};border-left:4px solid {border};'
-        f'padding:10px 16px;border-radius:4px;margin:10px 0 6px;">'
-        f'<span style="font-weight:700;font-size:15px;">'
-        f'📋 {label}: {file_name}</span></div>',
+        f'padding:10px 16px;border-radius:4px;margin:6px 0 4px;'
+        f'display:flex;align-items:center;justify-content:space-between;">'
+        f'<span style="font-weight:700;font-size:14px;">📋 {label}: {file_name}{dag_part}</span>'
+        f'<span style="font-size:13px;color:#374151;">{counts_part}</span>'
+        f'</div>',
         unsafe_allow_html=True,
     )
 
@@ -402,16 +425,17 @@ def render_export_result(raw_json: str) -> None:
             for e in file_errors:
                 st.warning(e)
 
-    # Per-file summary rows — banner + scorecard only.
-    # bq_table_groups (rule-level detail) is stripped before session storage to
-    # avoid thousands of widgets crashing the browser. Full detail is in the Excel.
+    # Per-file summary rows — single styled banner with DAG + counts inline.
     results = data.get("results", [])
     for res in results:
         if res.get("error"):
-            continue  # errors already shown in the expander above
-        st.divider()
-        _render_banner(res.get("mapping_file", ""), completed=True)
-        _render_scorecards(res.get("summary", {}))
+            continue  # errors shown in the expander above
+        _render_banner(
+            res.get("mapping_file", ""),
+            completed=True,
+            dag_id=res.get("dag_id"),
+            summary=res.get("summary"),
+        )
         if res.get("sql_fetch_error"):
             st.caption(f"⚠️ SQL fetch: {res['sql_fetch_error']}")
 
