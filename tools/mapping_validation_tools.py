@@ -1843,15 +1843,15 @@ def _do_validate_mapping(
 			"raw_sql": ""
 		}
 
-		def _structure_for_bq(bq_hint: str | None) -> dict:
+		def _structure_for_bq(bq_hint: str | None) -> tuple[dict, str | None]:
 			"""Pick the task structure whose destination table matches the BQ hint."""
 			if bq_hint:
 				hint_norm = _norm(bq_hint.split(".")[-1])
-				for s in structures.values():
+				for tid, s in structures.items():
 					dest = _norm((s.get("destination_table") or "").split(".")[-1])
 					if dest and hint_norm == dest:
-						return s
-			return merged_structure
+						return s, tid
+			return merged_structure, None
 
 		# ── Group rules by BQ table label ─────────────────────────────────────
 		bq_groups: dict[str, list[dict]] = {}
@@ -1880,7 +1880,7 @@ def _do_validate_mapping(
 		has_sql = bool(structures)
 
 		for bq_label, group_rules in bq_groups.items():
-			structure = _structure_for_bq(bq_label)
+			structure, matched_tid = _structure_for_bq(bq_label)
 			disc               = discovery_map.get(bq_label, {"files": "", "type": "Unresolved"})
 			sql_file_for_group = disc["files"]
 			match_type_for_group = disc["type"]
@@ -1939,6 +1939,23 @@ def _do_validate_mapping(
 					
 					if verdict_data:
 						out.update(verdict_data)
+
+						# Refine SQL file if rule passed
+						if out.get("verdict") == "PASS":
+							exact_file = None
+							if matched_tid:
+								exact_file = task_files.get(matched_tid)
+							else:
+								evidence = out.get("evidence", "")
+								if evidence:
+									norm_ev = " ".join(evidence.split())
+									for tid, t_sql in task_sqls.items():
+										if norm_ev in " ".join(t_sql.split()):
+											exact_file = task_files.get(tid)
+											break
+							if exact_file:
+								out["sql_file"] = exact_file
+
 						v = out["verdict"].lower().replace(" ", "_")
 						if v in summary:
 							summary[v] += 1
