@@ -521,6 +521,12 @@ def _run_batch_validation(batch: dict) -> None:
             )
             validated.append(result)
 
+            if result.get("error"):
+                err_msg = result["error"]
+                hint    = result.get("hint", "")
+                st.warning(f"⚠️ **{file_name}**: {err_msg}" + (f" — {hint}" if hint else ""))
+                continue
+
             s = result.get("summary") or {}
             for k in running:
                 running[k] += s.get(k, 0)
