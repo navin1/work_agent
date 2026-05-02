@@ -610,6 +610,7 @@ if _active_prompt:
 
     if _is_batch_request(_active_prompt):
         # ── Batch path: one-shot param extraction → Streamlit-owned loop ──────
+        # Phase 1: discovery — runs inside a chat bubble so the spinner is visible
         with st.chat_message("assistant"):
             with st.spinner("Finding mapping files…"):
                 _disc = _discover_files_for_batch(_active_prompt)
@@ -633,19 +634,21 @@ if _active_prompt:
                 _err = _disc["error"]
                 st.error(_err)
                 _reply = _err
+                st.session_state.messages.append({"role": "assistant", "content": _reply})
             elif not _disc.get("files"):
                 st.warning("No .xlsx mapping files found in the specified location.")
                 _reply = "No mapping files found."
+                st.session_state.messages.append({"role": "assistant", "content": _reply})
             else:
                 n = _disc["total"]
                 _reply = f"Found {n} file(s) — starting validation now."
                 st.markdown(_reply)
-                _run_batch_validation(_disc)
+                st.session_state.messages.append({"role": "assistant", "content": _reply})
 
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": _reply,
-        })
+        # Phase 2: per-file validation loop — rendered at TOP LEVEL so st.status()
+        # and st.empty() update the browser in real time (chat containers batch renders).
+        if _disc and not _disc.get("error") and _disc.get("files"):
+            _run_batch_validation(_disc)
 
     else:
         # ── Normal agent path ─────────────────────────────────────────────────
