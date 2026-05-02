@@ -1834,6 +1834,55 @@ def _do_validate_mapping(
 						return s, tid
 			return merged_structure, None
 
+		def _master_files(bq_label: str) -> tuple[list[str], str]:
+			"""Build authoritative SQL file list for a BQ table label.
+
+			A file qualifies when it contains a DML statement AND references
+			the target table name — confirming it is responsible for writing
+			to that table.  Falls back to filename-stem match when the table
+			name is not literal in the SQL (e.g. Jinja/loop placeholders).
+
+			Returns (sorted file list, match_type).
+			"""
+			if is_valid_fqn(bq_label):
+				variants = get_search_variants(bq_label)
+				short    = variants[-1].lower()
+			else:
+				# No FQN configured — use the mapping file stem as the table hint
+				short    = file_stem.lower()
+				variants = []
+
+			found: set[str] = set()
+			match_type = "Unresolved"
+
+			# Tier 1 — DML + table name confirmed in SQL content
+			if variants:
+				for tid, content in task_sqls.items():
+					if _DML_REGEX.search(content) and any(
+						re.search(rf'\b{re.escape(v)}\b', content, re.IGNORECASE)
+						for v in variants
+					):
+						fval  = task_files.get(tid, "")
+						parts = [fp for fp in fval.split(", ") if fp]
+						if len(parts) > 1:
+							narrowed = [fp for fp in parts if short in Path(fp).stem.lower()]
+							found.update(narrowed)   # only confirmed files; skip if none narrow
+						else:
+							found.update(parts)
+				if found:
+					match_type = "Direct"
+
+			# Tier 2 — Table name found in SQL filename stem
+			if not found and short:
+				for fval in task_files.values():
+					for fp in fval.split(", "):
+						if fp and short in Path(fp).stem.lower():
+							found.add(fp)
+				if found:
+					match_type = "Filename"
+
+			return sorted(found), match_type
+
 		# ── Group rules by BQ table label ─────────────────────────────────────
 		bq_groups: dict[str, list[dict]] = {}
 		for rule in raw_rules:
@@ -1846,12 +1895,6 @@ def _do_validate_mapping(
 			else:
 				bq_groups.setdefault("(no BQ table configured)", []).append(rule)
 
-		# ── Pre-compute SQL file discovery for all BQ table labels ────────────
-		discovery_map = precompute_dag_discovery(
-			task_sqls, task_files, list(bq_groups.keys()),
-			mapping_file_stem=file_stem,
-		)
-
 		# ── Evaluate rules ────────────────────────────────────────────────────
 		summary = {
 			"total": 0, "pass": 0, "fail": 0, "partial": 0,
@@ -1862,24 +1905,7 @@ def _do_validate_mapping(
 
 		for bq_label, group_rules in bq_groups.items():
 			structure, matched_tid = _structure_for_bq(bq_label)
-
-			# Primary: use the task the LLM actually evaluated against
-			if matched_tid and matched_tid in task_files:
-				short_name = bq_label.split(".")[-1].lower()
-				file_val   = task_files[matched_tid]
-				parts      = [fp for fp in file_val.split(", ") if fp]
-				if len(parts) > 1 and short_name:
-					narrowed = [fp for fp in parts if short_name in Path(fp).stem.lower()]
-					sql_file_for_group = ", ".join(sorted(narrowed or parts))
-				else:
-					sql_file_for_group = file_val
-				match_type_for_group = "Direct"
-			else:
-				# Fallback: tier-based discovery when no specific task matched
-				disc               = discovery_map.get(bq_label, {"files": "", "type": "Unresolved"})
-				sql_file_for_group = disc["files"]
-				match_type_for_group = disc["type"]
-
+			master_files, master_match_type = _master_files(bq_label)
 			evaluated_rules: list[dict] = []
 
 			# --- BULK EVALUATION EXECUTION ---
@@ -1896,8 +1922,8 @@ def _do_validate_mapping(
 					"rule_text":		rule["rule_text"],
 					"rule_type":		rule.get("rule_type", ""),
 					"confidence_tier": rule.get("confidence_tier", ""),
-					"sql_file":		sql_file_for_group,
-					"match_type":	  match_type_for_group,
+					"sql_file":		"",
+					"match_type":	  "",
 					"verdict":		 "",
 					"reason":		  "",
 					"evidence":		 "",
@@ -1910,6 +1936,7 @@ def _do_validate_mapping(
 				if rule["_na"]:
 					out["verdict"] = "NOT_APPLICABLE"
 					out["reason"] = "Rule text indicates no transformation logic required."
+					out["match_type"] = "N/A"
 					summary["not_applicable"] += 1
 				elif not has_sql:
 					out["verdict"] = "NOT_EVALUATED"
@@ -1921,36 +1948,19 @@ def _do_validate_mapping(
 							else "No SQL available (Composer not configured or DAG not found)."
 						)
 					)
+					out["match_type"] = "N/A"
 					summary["not_evaluated"] += 1
 				else:
 					# Fetch from bulk results
 					verdict_data = bulk_verdicts.get(rule["rule_id"])
-					
-					# Sometimes LLM might cast rule_id as string or vice versa
 					if not verdict_data:
 						try:
 							verdict_data = bulk_verdicts.get(str(rule["rule_id"]))
 						except Exception:
 							pass
-					
+
 					if verdict_data:
 						out.update(verdict_data)
-
-						# Refine SQL file to the specific file evaluated
-						exact_file = None
-						if matched_tid:
-							exact_file = task_files.get(matched_tid)
-						else:
-							evidence = out.get("evidence", "")
-							if evidence:
-								norm_ev = " ".join(evidence.split())
-								for tid, t_sql in task_sqls.items():
-									if norm_ev in " ".join(t_sql.split()):
-										exact_file = task_files.get(tid)
-										break
-						if exact_file:
-							out["sql_file"] = exact_file
-
 						v = out["verdict"].lower().replace(" ", "_")
 						if v in summary:
 							summary[v] += 1
@@ -1960,6 +1970,20 @@ def _do_validate_mapping(
 						out["verdict"] = "ERROR"
 						out["reason"] = "LLM omitted this rule from its bulk response."
 						summary["error"] += 1
+
+					# ── Assign SQL file based on verdict and master file list ──────
+					# master_files = files confirmed to contain DML + this BQ table name.
+					# PASS with single file  → that one file (unambiguous).
+					# PASS with multiple     → all confirmed files (all contributed).
+					# FAIL / PARTIAL / ERROR → all confirmed files (reviewer needs them).
+					# Empty master list      → blank (cannot confirm which file applies).
+					verdict_upper = out.get("verdict", "").upper()
+					if master_files:
+						out["sql_file"]   = ", ".join(master_files)
+						out["match_type"] = master_match_type
+					else:
+						out["sql_file"]   = ""
+						out["match_type"] = "Unresolved"
 
 				evaluated_rules.append(out)
 
