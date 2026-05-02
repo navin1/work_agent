@@ -458,6 +458,36 @@ def _discover_files_for_batch(user_message: str) -> dict | None:
         return None
 
 
+_SLIM_RULE_DROP = {"evidence", "relevant_ctes", "relevant_clauses"}
+_SLIM_RESULT_DROP = {"sql_debug"}
+
+
+def _slim_result(res: dict) -> dict:
+    """Strip bulk fields from a validation result before storing in session state.
+
+    Keeps everything needed for render_export_result (summary, verdicts, reasons)
+    but removes large SQL snippets and CTE lists that cause browser OOM crashes
+    when 14+ files worth of data are serialised into the Streamlit session.
+    """
+    if not isinstance(res, dict) or res.get("error"):
+        return res
+    slim = {k: v for k, v in res.items() if k not in _SLIM_RESULT_DROP}
+    groups = slim.get("bq_table_groups")
+    if groups:
+        slim_groups = []
+        for grp in groups:
+            slim_grp = dict(grp)
+            rules = slim_grp.get("rules") or slim_grp.get("evaluated_rules") or []
+            slim_grp_key = "rules" if "rules" in slim_grp else "evaluated_rules"
+            slim_grp[slim_grp_key] = [
+                {k: v for k, v in rule.items() if k not in _SLIM_RULE_DROP}
+                for rule in rules
+            ]
+            slim_groups.append(slim_grp)
+        slim["bq_table_groups"] = slim_groups
+    return slim
+
+
 def _run_batch_validation(batch: dict) -> dict:
     """Run per-file validation with real-time st.status() progress, then show consolidated view."""
     import json
@@ -587,7 +617,7 @@ def _run_batch_validation(batch: dict) -> dict:
         "is_export":       True,
         "files_exported":  len(validated),
         "overall_summary": running,
-        "results":         validated,
+        "results":         [_slim_result(r) for r in validated],
         "file_errors":     file_errors,  # persists through st.rerun() via session_state
     }
     try:
