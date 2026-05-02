@@ -75,86 +75,6 @@ def is_valid_fqn(key: str) -> bool:
 	return "." in key and not any(c in key for c in (" ", "(", ")"))
 
 
-def precompute_dag_discovery(
-	task_sqls: "dict[str, str]",
-	task_files: "dict[str, str]",
-	bq_labels: "list[str]",
-	mapping_file_stem: str = "",
-) -> "dict[str, dict]":
-	"""Single-pass DAG scan: resolve each BQ table label to its SQL file(s) and match type.
-
-	Only files that can be confirmed to contain the target table are returned.
-
-	Tier 1 — DML + table name found in SQL content  → match_type "Direct"
-	Tier 2 — Table name found in SQL filename stem   → match_type "Filename"
-	No match → files = "", match_type = "Unresolved" (honest: cannot confirm)
-
-	Multi-file task entries (loop DAGs) are stem-narrowed in Tier 1 so only
-	the file whose name matches the target table is returned.
-	"""
-	discovery: dict[str, dict] = {}
-
-	def _resolve_files(tid: str, short: str) -> set[str]:
-		"""Return file paths for a task, narrowing multi-file entries by table stem."""
-		file_val = task_files.get(tid, "")
-		if not file_val:
-			return set()
-		parts = [fp for fp in file_val.split(", ") if fp]
-		if len(parts) > 1 and short:
-			narrowed = [fp for fp in parts if short in Path(fp).stem.lower()]
-			return set(narrowed) if narrowed else set()
-		return set(parts)
-
-	def _tier2_stem(short: str) -> set[str]:
-		"""Return files whose filename stem contains the table short-name."""
-		found: set[str] = set()
-		for fstr in task_files.values():
-			for fp in fstr.split(", "):
-				if fp and short in Path(fp).stem.lower():
-					found.add(fp)
-		return found
-
-	for label in bq_labels:
-		short_name = (label.split(".")[-1] if "." in label else label).lower()
-
-		if label == "(no BQ table configured)" or not is_valid_fqn(label):
-			# No FQN — use mapping file stem as the table hint for Tier 2
-			hint = mapping_file_stem.lower() or short_name
-			matched = _tier2_stem(hint) if hint else set()
-			discovery[label] = {
-				"files": ", ".join(sorted(matched)),
-				"type":  "Filename" if matched else "Unresolved",
-			}
-			continue
-
-		variants   = get_search_variants(label)
-		candidates: set[str] = set()
-		match_type = "Unresolved"
-
-		# ── Tier 1: DML + table name in SQL content ──────────────────────────
-		for tid, content in task_sqls.items():
-			if _DML_REGEX.search(content) and any(
-				re.search(rf'\b{re.escape(v)}\b', content, re.IGNORECASE)
-				for v in variants
-			):
-				candidates.update(_resolve_files(tid, short_name))
-		if candidates:
-			match_type = "Direct"
-
-		# ── Tier 2: Table name in SQL filename stem ───────────────────────────
-		if not candidates:
-			candidates = _tier2_stem(short_name)
-			if candidates:
-				match_type = "Filename"
-
-		discovery[label] = {
-			"files": ", ".join(sorted(candidates)),
-			"type":  match_type,
-		}
-
-	return discovery
-
-
 # ── Column detection helpers ──────────────────────────────────────────────────
 
 def _norm(name: str) -> str:
@@ -357,7 +277,6 @@ def _merge_structures(structures: list[dict]) -> dict:
 	merged: dict = {
 		"ctes": {}, "joins": [], "where_clauses": [], "group_by": [],
 		"select_expressions": {}, "aggregations": [], "destination_table": None,
-		"raw_sql": "\n\n-- ---\n\n".join(filter(None, [s.get("raw_sql") for s in structures]))
 	}
 	for s in structures:
 		merged["ctes"].update(s.get("ctes", {}))
@@ -448,20 +367,33 @@ def _save_verdict(key: str, result: dict) -> None:
 	persistence.save_validation_cache(file_cache)
 
 
+# ── Annotated SQL builder ─────────────────────────────────────────────────────
+
+def _build_annotated_sql(task_sqls: dict[str, str], task_files: dict[str, str]) -> str:
+	"""Concatenate SQL blocks with SOURCE_FILE headers so the LLM can attribute evidence."""
+	parts = []
+	for tid, sql in task_sqls.items():
+		file_label = task_files.get(tid) or tid
+		header = (
+			f"/* =========================================\n"
+			f"   SOURCE_FILE: {file_label}\n"
+			f"   ========================================= */"
+		)
+		parts.append(f"{header}\n{sql}")
+	return "\n\n".join(parts)
+
+
 # ── Bulk LLM evaluation ───────────────────────────────────────────────────────
 
-def _evaluate_rules_bulk(rules: list[dict], structure: dict, force_refresh: bool, sql_note: str = "") -> dict:
+def _evaluate_rules_bulk(rules: list[dict], annotated_sql: str, force_refresh: bool, sql_note: str = "") -> dict:
 	"""Single-pass batched LLM evaluation for all rules at once."""
 	if not rules:
 		return {}
 
-	# Extract clean SQL snippet
-	raw_sql = structure.get("raw_sql", "")
-	if len(raw_sql) > 15000:
-		# Truncate if insanely huge, though Gemini 1.5 Pro can handle 1M+ tokens
-		raw_sql = raw_sql[:15000] + "\n...[TRUNCATED]..."
+	sql_for_llm = annotated_sql
+	if len(sql_for_llm) > 15000:
+		sql_for_llm = sql_for_llm[:15000] + "\n...[TRUNCATED]..."
 
-	# Build concise rules list for prompt
 	prompt_rules = []
 	for r in rules:
 		if r.get("_na"):
@@ -474,22 +406,16 @@ def _evaluate_rules_bulk(rules: list[dict], structure: dict, force_refresh: bool
 		})
 
 	if not prompt_rules:
-		# All rules are N/A
 		return {}
 
 	rules_json_str = json.dumps(prompt_rules)
-	
-	# Calculate cache key based on all rules and the raw SQL
 	rules_hash = hashlib.sha256(rules_json_str.encode()).hexdigest()
-	sql_hash = hashlib.sha256(raw_sql.encode()).hexdigest()
+	sql_hash = hashlib.sha256(annotated_sql.encode()).hexdigest()
 	cache_key = _cache_key(rules_hash, sql_hash)
 
 	if not force_refresh:
 		cached = _get_cached_verdict(cache_key)
 		if cached:
-			# Map cached list back to a dict keyed by rule_id.
-			# Old cache entries may lack "rule_id" in the value — skip those so
-			# they fall through to a fresh LLM evaluation instead of raising KeyError.
 			out = {}
 			for r in cached.get("results", []):
 				rid = r.get("rule_id")
@@ -500,51 +426,53 @@ def _evaluate_rules_bulk(rules: list[dict], structure: dict, force_refresh: bool
 
 	note_section = f"NOTE: {sql_note}\n\n" if sql_note else ""
 	prompt = (
-		"You are a Data QA Engineer. Below is a complete SQL script and a list of business rules "
-		"from an Excel mapping document. Your task is to validate every single rule against the SQL.\n\n"
+		"You are a Data QA Engineer. The SQL below consists of one or more scripts, "
+		"each preceded by a SOURCE_FILE comment that identifies its origin file. "
+		"Validate every business rule in the list against the SQL.\n\n"
 		f"{note_section}"
 		"FULL SQL SCRIPT:\n"
 		"```sql\n"
-		f"{raw_sql}\n"
+		f"{sql_for_llm}\n"
 		"```\n\n"
 		"BUSINESS RULES TO VALIDATE:\n"
 		"```json\n"
 		f"{rules_json_str}\n"
 		"```\n\n"
-		"Return a JSON array where each object corresponds to a rule. Provide your evaluation. "
-		"The output MUST be a valid JSON array of objects with exact keys:\n"
-		'[\n {"rule_id": "rule_id_value_from_input", "verdict": "PASS|FAIL|PARTIAL", "reason": "1-2 sentences", "evidence": "specific SQL snippet", "flags": []}\n]'
+		"Return a JSON array where each object corresponds to a rule. "
+		"The output MUST be a valid JSON array with these exact keys:\n"
+		'[\n'
+		'  {"rule_id": "<value from input>", "verdict": "PASS|FAIL|PARTIAL",\n'
+		'   "reason": "1-2 sentences", "evidence": "exact SQL snippet or empty string",\n'
+		'   "source_file": "<value of the nearest SOURCE_FILE header above the evidence snippet, or empty string if no evidence>",\n'
+		'   "flags": []}\n'
+		']'
 	)
 
 	results_dict = {}
 	try:
 		response_text = _call_llm(prompt)
 		parsed_array = _extract_json_array(response_text)
-		
+
 		if isinstance(parsed_array, list):
 			for res in parsed_array:
 				rid = res.get("rule_id")
 				if rid is not None:
-					# In bulk mode we might not get every ID accurately. Standardize to string or int if needed,
-					# but rules_dict keyed by ID works natively.
 					try:
 						rid = int(rid)
 					except Exception:
-						rid = str(rid) # Fallback to string if it's alphanumeric like "BQ Column Name"
-					
+						rid = str(rid)
+
 					results_dict[rid] = {
-						"rule_id": rid,
-						"verdict": res.get("verdict", "PARTIAL"),
-						"reason": res.get("reason", ""),
-						"evidence": res.get("evidence", ""),
-						"flags": res.get("flags", []),
-						"relevant_ctes": [],
-						"relevant_clauses": [],
-						"cache_hit": False,
+						"rule_id":    rid,
+						"verdict":    res.get("verdict", "PARTIAL"),
+						"reason":     res.get("reason", ""),
+						"evidence":   res.get("evidence", ""),
+						"source_file": res.get("source_file", ""),
+						"flags":      res.get("flags", []),
+						"cache_hit":  False,
 					}
-					
-			# Cache successful results
-			_save_verdict(cache_key, {"results": list(results_dict.values())})
+
+		_save_verdict(cache_key, {"results": list(results_dict.values())})
 	except Exception as exc:
 		print(f"Bulk LLM evaluation failed: {exc}")
 
@@ -1821,18 +1749,8 @@ def _do_validate_mapping(
 		merged_structure = _merge_structures(list(structures.values())) if structures else {
 			"ctes": {}, "joins": [], "where_clauses": [], "group_by": [],
 			"select_expressions": {}, "aggregations": [], "destination_table": None,
-			"raw_sql": ""
 		}
-
-		def _structure_for_bq(bq_hint: str | None) -> tuple[dict, str | None]:
-			"""Pick the task structure whose destination table matches the BQ hint."""
-			if bq_hint:
-				hint_norm = _norm(bq_hint.split(".")[-1])
-				for tid, s in structures.items():
-					dest = _norm((s.get("destination_table") or "").split(".")[-1])
-					if dest and hint_norm == dest:
-						return s, tid
-			return merged_structure, None
+		annotated_sql = _build_annotated_sql(task_sqls, task_files)
 
 		def _master_files(bq_label: str) -> tuple[list[str], str]:
 			"""Build authoritative SQL file list for a BQ table label.
@@ -1904,33 +1822,29 @@ def _do_validate_mapping(
 		has_sql = bool(structures)
 
 		for bq_label, group_rules in bq_groups.items():
-			structure, matched_tid = _structure_for_bq(bq_label)
 			master_files, master_match_type = _master_files(bq_label)
 			evaluated_rules: list[dict] = []
 
-			# --- BULK EVALUATION EXECUTION ---
 			bulk_verdicts = {}
 			if has_sql:
-				 bulk_verdicts = _evaluate_rules_bulk(group_rules, structure, force_refresh, sql_note)
+				bulk_verdicts = _evaluate_rules_bulk(group_rules, annotated_sql, force_refresh, sql_note)
 
 			for rule in group_rules:
 				summary["total"] += 1
 				out: dict = {
-					"rule_id":		 rule["rule_id"],
+					"rule_id":         rule["rule_id"],
 					"target_columns":  rule["target_columns"],
 					"source_columns":  rule["source_columns"],
-					"rule_text":		rule["rule_text"],
-					"rule_type":		rule.get("rule_type", ""),
+					"rule_text":       rule["rule_text"],
+					"rule_type":       rule.get("rule_type", ""),
 					"confidence_tier": rule.get("confidence_tier", ""),
-					"sql_file":		"",
-					"match_type":	  "",
-					"verdict":		 "",
-					"reason":		  "",
-					"evidence":		 "",
-					"flags":			[],
-					"relevant_ctes":	[],
-					"relevant_clauses": [],
-					"cache_hit":		False,
+					"sql_file":        "",
+					"match_type":      "",
+					"verdict":         "",
+					"reason":          "",
+					"evidence":        "",
+					"flags":           [],
+					"cache_hit":       False,
 				}
 
 				if rule["_na"]:
@@ -1951,7 +1865,6 @@ def _do_validate_mapping(
 					out["match_type"] = "N/A"
 					summary["not_evaluated"] += 1
 				else:
-					# Fetch from bulk results
 					verdict_data = bulk_verdicts.get(rule["rule_id"])
 					if not verdict_data:
 						try:
@@ -1971,21 +1884,17 @@ def _do_validate_mapping(
 						out["reason"] = "LLM omitted this rule from its bulk response."
 						summary["error"] += 1
 
-					# ── Assign SQL file based on verdict and master file list ──────
-					if master_files:
-						# Confirmed files (DML + table name verified) — same for all verdicts
+					# ── Assign SQL file: LLM attribution first, DML-confirmed fallback ──
+					llm_source = out.pop("source_file", "")
+					if llm_source:
+						out["sql_file"]   = llm_source
+						out["match_type"] = "LLM-attributed"
+					elif master_files:
 						out["sql_file"]   = ", ".join(master_files)
 						out["match_type"] = master_match_type
 					else:
-						# No confirmed file, but SQL was evaluated — show what was fed to the LLM.
-						# reason/evidence proves evaluation happened, so the file list is knowable.
-						all_evaluated = sorted({
-							fp
-							for fval in task_files.values()
-							for fp in fval.split(", ") if fp
-						})
-						out["sql_file"]   = ", ".join(all_evaluated) if all_evaluated else ""
-						out["match_type"] = "Merged" if all_evaluated else "Unresolved"
+						out["sql_file"]   = ""
+						out["match_type"] = "Unresolved"
 
 				evaluated_rules.append(out)
 
