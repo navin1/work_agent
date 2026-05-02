@@ -1881,9 +1881,24 @@ def _do_validate_mapping(
 
 		for bq_label, group_rules in bq_groups.items():
 			structure, matched_tid = _structure_for_bq(bq_label)
-			disc               = discovery_map.get(bq_label, {"files": "", "type": "Unresolved"})
-			sql_file_for_group = disc["files"]
-			match_type_for_group = disc["type"]
+
+			# Primary: use the task the LLM actually evaluated against
+			if matched_tid and matched_tid in task_files:
+				short_name = bq_label.split(".")[-1].lower()
+				file_val   = task_files[matched_tid]
+				parts      = [fp for fp in file_val.split(", ") if fp]
+				if len(parts) > 1 and short_name:
+					narrowed = [fp for fp in parts if short_name in Path(fp).stem.lower()]
+					sql_file_for_group = ", ".join(sorted(narrowed or parts))
+				else:
+					sql_file_for_group = file_val
+				match_type_for_group = "Direct"
+			else:
+				# Fallback: tier-based discovery when no specific task matched
+				disc               = discovery_map.get(bq_label, {"files": "", "type": "Unresolved"})
+				sql_file_for_group = disc["files"]
+				match_type_for_group = disc["type"]
+
 			evaluated_rules: list[dict] = []
 
 			# --- BULK EVALUATION EXECUTION ---
