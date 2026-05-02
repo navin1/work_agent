@@ -390,8 +390,16 @@ def _evaluate_rules_bulk(rules: list[dict], structure: dict, force_refresh: bool
 	if not force_refresh:
 		cached = _get_cached_verdict(cache_key)
 		if cached:
-			# Map cached list back to a dict keyed by rule_id
-			return {r["rule_id"]: {**r, "cache_hit": True} for r in cached.get("results", [])}
+			# Map cached list back to a dict keyed by rule_id.
+			# Old cache entries may lack "rule_id" in the value — skip those so
+			# they fall through to a fresh LLM evaluation instead of raising KeyError.
+			out = {}
+			for r in cached.get("results", []):
+				rid = r.get("rule_id")
+				if rid is not None:
+					out[rid] = {**r, "cache_hit": True}
+			if out:
+				return out
 
 	note_section = f"NOTE: {sql_note}\n\n" if sql_note else ""
 	prompt = (
@@ -428,6 +436,7 @@ def _evaluate_rules_bulk(rules: list[dict], structure: dict, force_refresh: bool
 						rid = str(rid) # Fallback to string if it's alphanumeric like "BQ Column Name"
 					
 					results_dict[rid] = {
+						"rule_id": rid,
 						"verdict": res.get("verdict", "PARTIAL"),
 						"reason": res.get("reason", ""),
 						"evidence": res.get("evidence", ""),
@@ -2092,9 +2101,13 @@ def validate_mapping_folder(
 
         results.append(res)
 
-        s = res.get("summary", {})
-        for k in overall_summary:
-            overall_summary[k] += s.get(k, 0)
+        if "error" in res:
+            overall_summary["error"] += 1
+            overall_summary["total"] += 1
+        else:
+            s = res.get("summary", {})
+            for k in overall_summary:
+                overall_summary[k] += s.get(k, 0)
 
         progress_log.append({
             "file":           xlsx_path.name,
