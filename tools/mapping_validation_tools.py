@@ -83,88 +83,69 @@ def precompute_dag_discovery(
 ) -> "dict[str, dict]":
 	"""Single-pass DAG scan: resolve each BQ table label to its SQL file(s) and match type.
 
-	Tier 1 — DML + FQN variant in SQL content          → match_type "Direct"
-	Tier 2 — SQL filename stem contains table name      → match_type "Filename"
-	Tier 3 — DML file with unresolved placeholders      → match_type "Unresolved"
-	Tier 4 — All DAG SQL files (or task IDs if no files)→ match_type "Unresolved"
+	Only files that can be confirmed to contain the target table are returned.
 
-	For multi-file task entries (loop DAGs), Tier 1 applies an additional stem
-	narrowing step so only the matching file is returned, not the full list.
+	Tier 1 — DML + table name found in SQL content  → match_type "Direct"
+	Tier 2 — Table name found in SQL filename stem   → match_type "Filename"
+	No match → files = "", match_type = "Unresolved" (honest: cannot confirm)
 
-	When no valid BQ FQN is available, mapping_file_stem is used as a proxy
-	for Tier 2 narrowing before falling back to Tier 4.
+	Multi-file task entries (loop DAGs) are stem-narrowed in Tier 1 so only
+	the file whose name matches the target table is returned.
 	"""
 	discovery: dict[str, dict] = {}
 
 	def _resolve_files(tid: str, short: str) -> set[str]:
-		"""Return candidate file paths for a task, narrowing multi-file entries by stem."""
-		file_val = task_files.get(tid, "") or f"task_id:{tid}"
+		"""Return file paths for a task, narrowing multi-file entries by table stem."""
+		file_val = task_files.get(tid, "")
+		if not file_val:
+			return set()
 		parts = [fp for fp in file_val.split(", ") if fp]
 		if len(parts) > 1 and short:
 			narrowed = [fp for fp in parts if short in Path(fp).stem.lower()]
-			return set(narrowed) if narrowed else set(parts)
+			return set(narrowed) if narrowed else set()
 		return set(parts)
 
-	def _tier4_all() -> "tuple[set[str], str]":
-		"""Return all known DAG SQL files, falling back to task IDs in composer mode."""
-		files: set[str] = set()
+	def _tier2_stem(short: str) -> set[str]:
+		"""Return files whose filename stem contains the table short-name."""
+		found: set[str] = set()
 		for fstr in task_files.values():
-			files.update(fp for fp in fstr.split(", ") if fp)
-		if not files:
-			files.update(f"task_id:{tid}" for tid in task_sqls)
-		return files, "Unresolved"
+			for fp in fstr.split(", "):
+				if fp and short in Path(fp).stem.lower():
+					found.add(fp)
+		return found
 
 	for label in bq_labels:
+		short_name = (label.split(".")[-1] if "." in label else label).lower()
+
 		if label == "(no BQ table configured)" or not is_valid_fqn(label):
-			# No BQ FQN — try Tier 2 narrowing via mapping file stem, then Tier 4
-			stem_hint = mapping_file_stem.lower()
-			narrowed: set[str] = set()
-			if stem_hint:
-				for fstr in task_files.values():
-					for fp in fstr.split(", "):
-						if fp and stem_hint in Path(fp).stem.lower():
-							narrowed.add(fp)
-			if narrowed:
-				discovery[label] = {"files": ", ".join(sorted(narrowed)), "type": "Filename"}
-			else:
-				files, mtype = _tier4_all()
-				discovery[label] = {"files": ", ".join(sorted(files)) or "", "type": mtype}
+			# No FQN — use mapping file stem as the table hint for Tier 2
+			hint = mapping_file_stem.lower() or short_name
+			matched = _tier2_stem(hint) if hint else set()
+			discovery[label] = {
+				"files": ", ".join(sorted(matched)),
+				"type":  "Filename" if matched else "Unresolved",
+			}
 			continue
 
 		variants   = get_search_variants(label)
-		short_name = variants[-1].lower()
 		candidates: set[str] = set()
 		match_type = "Unresolved"
 
-		# ── Tier 1: DML + FQN variant content match ──────────────────────────
+		# ── Tier 1: DML + table name in SQL content ──────────────────────────
 		for tid, content in task_sqls.items():
 			if _DML_REGEX.search(content) and any(
 				re.search(rf'\b{re.escape(v)}\b', content, re.IGNORECASE)
 				for v in variants
 			):
 				candidates.update(_resolve_files(tid, short_name))
-				match_type = "Direct"
+		if candidates:
+			match_type = "Direct"
 
-		# ── Tier 2: Filename stem contains table short-name ──────────────────
+		# ── Tier 2: Table name in SQL filename stem ───────────────────────────
 		if not candidates:
-			for fstr in task_files.values():
-				for fp in fstr.split(", "):
-					if fp and short_name in Path(fp).stem.lower():
-						candidates.add(fp)
+			candidates = _tier2_stem(short_name)
 			if candidates:
 				match_type = "Filename"
-
-		# ── Tier 3: DML files with unresolved placeholders ───────────────────
-		if not candidates:
-			for tid, content in task_sqls.items():
-				if _DML_REGEX.search(content) and (
-					"__VAR__" in content or "{{" in content
-				):
-					candidates.update(_resolve_files(tid, short_name))
-
-		# ── Tier 4: All DAG SQL files (exhaustive fallback) ──────────────────
-		if not candidates:
-			candidates, match_type = _tier4_all()
 
 		discovery[label] = {
 			"files": ", ".join(sorted(candidates)),

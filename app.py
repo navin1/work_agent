@@ -503,10 +503,9 @@ def _run_batch_validation(batch: dict) -> dict:
     except Exception as _ie:
         st.warning(f"Pre-validation ingest warning: {_ie}")
 
-    # Evict any stale error-result cache entries so failed files are retried.
-    stale = [k for k, v in list(_result_cache.items()) if v.get("error")]
-    for k in stale:
-        _result_cache.pop(k, None)
+    # Clear the full result cache so the latest SQL file discovery logic runs
+    # on every batch — stale entries would silently return old sql_file values.
+    _result_cache.clear()
 
     running = {
         "pass": 0, "fail": 0, "partial": 0,
