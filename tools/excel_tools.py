@@ -115,7 +115,7 @@ def export_validation_excel(
         tab      = _vx_safe_tab(stem, used)
         used.add(tab)
         ws       = wb.create_sheet(title=tab)
-        _vx_header_row(ws, ["Column", "Status", "Confidence", "Reason", "Evidence"])
+        _vx_header_row(ws, ["Column", "Status", "Confidence", "Reason", "Evidence", "SQL File"])
         ws.row_dimensions[1].height = 20
 
         row = 2
@@ -132,6 +132,7 @@ def export_validation_excel(
                         (rule.get("confidence_tier",""), _VX_CENTER),
                         (rule.get("reason",         ""), _VX_WRAP),
                         (rule.get("evidence",       ""), _VX_WRAP),
+                        (rule.get("sql_file",       ""), _VX_WRAP),
                     ], 1):
                         cell = ws.cell(row=row, column=ci, value=val)
                         cell.alignment = aln
@@ -141,7 +142,7 @@ def export_validation_excel(
                     ws.row_dimensions[row].height = 30
                     row += 1
 
-        _vx_col_widths(ws, [28, 16, 13, 65, 55])
+        _vx_col_widths(ws, [28, 16, 13, 65, 55, 40])
         ws.freeze_panes = "A2"
 
     wb.save(out_path)

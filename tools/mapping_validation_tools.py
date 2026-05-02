@@ -1274,20 +1274,51 @@ def _diagnose_git_fetch(
     return diag
 
 
+def _sql_files_for_task(dag_dir: Path, task_id: str) -> str:
+    """Best-effort: return the SQL file path(s) for a task.
+
+    1. If task_id matches a .sql filename in dag_dir tree → return that path.
+    2. Otherwise collect all .sql files in dag_dir tree (covers loop-generated
+       tasks where the include path had an unresolved variable).
+    Returns a short, human-readable string suitable for the Excel 'SQL File' column.
+    """
+    if not task_id.startswith(("inline_", "sql_")):
+        matches = sorted(dag_dir.rglob(f"{task_id}.sql"))
+        if matches:
+            try:
+                return str(matches[0].relative_to(dag_dir))
+            except ValueError:
+                return matches[0].name
+
+    all_sqls = sorted(dag_dir.rglob("*.sql"))
+    all_sqls = [f for f in all_sqls if ".git" not in str(f) and "__pycache__" not in str(f)]
+    if all_sqls:
+        try:
+            return ", ".join(str(f.relative_to(dag_dir)) for f in all_sqls)
+        except ValueError:
+            return ", ".join(f.name for f in all_sqls)
+    return ""
+
+
 def _fetch_sql_local(
     dag_id: str,
     local_dag_root: str,
     task_filter: str | None,
     jinja_vars: dict,
-) -> "dict[str, str]":
-    """Scan local filesystem for DAG / SQL files and return Jinja-resolved SQL per task."""
+) -> "tuple[dict[str, str], dict[str, str]]":
+    """Scan local filesystem for DAG / SQL files.
+
+    Returns (task_sqls, task_files) where task_files maps task_id → SQL file path string.
+    """
     from core.sql_formatter import format_sql
 
     root = Path(local_dag_root)
     if not root.is_dir():
-        return {}
+        return {}, {}
 
     results: dict[str, str] = {}
+    task_files: dict[str, str] = {}
+
     for fpath in _find_dag_files(root, dag_id):
         try:
             source = fpath.read_text(encoding="utf-8", errors="replace")
@@ -1297,11 +1328,16 @@ def _fetch_sql_local(
         if fpath.suffix == ".sql":
             if task_filter is None or fpath.stem == task_filter:
                 results[fpath.stem] = format_sql(_resolve_jinja(source, jinja_vars))
+                try:
+                    task_files[fpath.stem] = str(fpath.relative_to(root))
+                except ValueError:
+                    task_files[fpath.stem] = fpath.name
         else:
             for tid, raw in _extract_sql_from_python(source, fpath.parent, task_filter).items():
                 results[tid] = format_sql(_resolve_jinja(raw, jinja_vars))
+                task_files[tid] = _sql_files_for_task(fpath.parent, tid)
 
-    return results
+    return results, task_files
 
 
 def _fetch_sql_git(
@@ -1309,21 +1345,25 @@ def _fetch_sql_git(
     git_repo_path: str,
     git_ref: str,
     task_filter: str | None,
-) -> "dict[str, str]":
+) -> "tuple[dict[str, str], dict[str, str]]":
     """Read DAG / SQL files from a local git repo at a specific ref using 'git show'.
     No checkout required — reads file content directly from git object store.
     Jinja vars are loaded from git history (LOCAL_GIT_JINJA_VARS_PATH at the same ref)
-    so they match the branch/commit being validated."""
+    so they match the branch/commit being validated.
+
+    Returns (task_sqls, task_files) where task_files maps task_id → git file path.
+    """
     import subprocess
     from core.sql_formatter import format_sql
 
     repo = Path(git_repo_path)
     if not repo.is_dir():
-        return {}
+        return {}, {}
 
     ref = git_ref or "HEAD"
     dag_slug = dag_id.lower().replace("-", "_")
     results: dict[str, str] = {}
+    task_files: dict[str, str] = {}
 
     # Load Jinja vars from git history at this ref (not from host filesystem)
     resolved_vars = _load_jinja_vars_for_git(str(repo), ref)
@@ -1373,6 +1413,7 @@ def _fetch_sql_git(
         if fpath.suffix == ".sql":
             if task_filter is None or fpath.stem == task_filter:
                 results[fpath.stem] = format_sql(_resolve_jinja(content, resolved_vars))
+                task_files[fpath.stem] = git_path
         else:
             def _git_reader(rel_path: str) -> "str | None":
                 try:
@@ -1388,8 +1429,18 @@ def _fetch_sql_git(
                 content, repo / fpath.parent, task_filter, path_reader=_git_reader
             ).items():
                 results[tid] = format_sql(_resolve_jinja(raw, resolved_vars))
+                # For git mode, find matching .sql file in the same tree directory
+                sql_dir = str(fpath.parent)
+                if not tid.startswith(("inline_", "sql_")):
+                    candidate = f"{sql_dir}/{tid}.sql" if sql_dir != "." else f"{tid}.sql"
+                    task_files[tid] = candidate if candidate in all_files else git_path
+                else:
+                    # Loop-generated task: list all .sql files in the same directory
+                    sibling_sqls = [f for f in all_files
+                                    if f.startswith(sql_dir + "/") and f.endswith(".sql")]
+                    task_files[tid] = ", ".join(sibling_sqls) if sibling_sqls else git_path
 
-    return results
+    return results, task_files
 
 
 def _do_validate_mapping(
@@ -1575,6 +1626,7 @@ def _do_validate_mapping(
 
 		# ── Fetch SQL — branched on source_mode ──────────────────────────────────
 		task_sqls: dict[str, str] = {}
+		task_files: dict[str, str] = {}   # task_id → source SQL file path
 		sql_fetch_error: str | None = None
 		sql_debug: dict | None = None
 		tasks_evaluated: list[str] = []
@@ -1588,7 +1640,7 @@ def _do_validate_mapping(
 			else:
 				try:
 					jinja_vars = _load_jinja_vars()
-					task_sqls = _fetch_sql_local(resolved_dag_id, local_root, task_id, jinja_vars)
+					task_sqls, task_files = _fetch_sql_local(resolved_dag_id, local_root, task_id, jinja_vars)
 					tasks_evaluated = list(task_sqls.keys())
 					if not task_sqls:
 						sql_debug = _diagnose_local_fetch(resolved_dag_id, local_root, task_id)
@@ -1605,7 +1657,7 @@ def _do_validate_mapping(
 				sql_fetch_error = "LOCAL_GIT_REPO_PATH is not set in .env and git_repo_path was not provided."
 			else:
 				try:
-					task_sqls = _fetch_sql_git(resolved_dag_id, git_root, ref, task_id)
+					task_sqls, task_files = _fetch_sql_git(resolved_dag_id, git_root, ref, task_id)
 					tasks_evaluated = list(task_sqls.keys())
 					if not task_sqls:
 						sql_debug = _diagnose_git_fetch(resolved_dag_id, git_root, ref, task_id)
@@ -1685,6 +1737,22 @@ def _do_validate_mapping(
 						return s
 			return merged_structure
 
+		def _sql_file_for_bq(bq_hint: str | None) -> str:
+			"""Return the SQL file path for the task that matches bq_hint, or all files."""
+			if bq_hint:
+				hint_norm = _norm(bq_hint.split(".")[-1])
+				for tid, s in structures.items():
+					dest = _norm((s.get("destination_table") or "").split(".")[-1])
+					if dest and hint_norm == dest:
+						return task_files.get(tid, "")
+			# No specific match — return union of all known file paths
+			seen, parts = set(), []
+			for v in task_files.values():
+				if v and v not in seen:
+					seen.add(v)
+					parts.append(v)
+			return ", ".join(parts)
+
 		# ── Group rules by BQ table label ─────────────────────────────────────
 		bq_groups: dict[str, list[dict]] = {}
 		for rule in raw_rules:
@@ -1707,8 +1775,9 @@ def _do_validate_mapping(
 
 		for bq_label, group_rules in bq_groups.items():
 			structure = _structure_for_bq(bq_label)
+			sql_file_for_group = _sql_file_for_bq(bq_label)
 			evaluated_rules: list[dict] = []
-			
+
 			# --- BULK EVALUATION EXECUTION ---
 			bulk_verdicts = {}
 			if has_sql:
@@ -1723,6 +1792,7 @@ def _do_validate_mapping(
 					"rule_text":		rule["rule_text"],
 					"rule_type":		rule.get("rule_type", ""),
 					"confidence_tier": rule.get("confidence_tier", ""),
+					"sql_file":		sql_file_for_group,
 					"verdict":		 "",
 					"reason":		  "",
 					"evidence":		 "",
