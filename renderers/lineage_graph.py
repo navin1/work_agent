@@ -295,7 +295,7 @@ def _render_content_panel(info: dict) -> None:
                     import pandas as pd
                     df = get_manager().execute(f'SELECT * FROM "{table_name}" LIMIT 500')
                     st.caption(f"{len(df):,} rows (limit 500)")
-                    st.dataframe(df, hide_index=True, use_container_width=True)
+                    st.dataframe(df, hide_index=True, width="stretch")
                 except Exception as exc:
                     st.info(f"Could not load file contents — table may not be loaded yet: {exc}")
 
@@ -437,7 +437,7 @@ def _render_lineage_summary(data: dict) -> None:
                     }
                     for t in tasks
                 ]
-                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+                st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
 # ── Public entry point ────────────────────────────────────────────────────────

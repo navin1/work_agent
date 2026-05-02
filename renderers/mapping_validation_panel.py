@@ -299,7 +299,7 @@ def _render_mapping_details(data: dict, uid: str) -> None:
                 "Mapped to column": ", ".join(supp),
                 "Detected by":     "auto",
             })
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
         st.caption(
             "Override any role by setting `mapping_columns` in `config/excel_mapping.json`."
         )

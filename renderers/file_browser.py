@@ -119,7 +119,7 @@ def render_file_browser(raw_json: str) -> None:
         c1, c2, c3 = st.columns([5, 1, 2])
         with c1:
             btn_key = f"fb_btn_{_key_tag}_{f['path']}"
-            if st.button(f"📄 {f['name']}", key=btn_key, use_container_width=True):
+            if st.button(f"📄 {f['name']}", key=btn_key, width="stretch"):
                 st.session_state[sel_key] = f
                 # Clear any cached content so a fresh fetch always runs
                 content_key = f"fb_content_{_key_tag}_{f['path']}"
@@ -158,7 +158,7 @@ def render_file_browser(raw_json: str) -> None:
             import pandas as pd
             df_csv = pd.read_csv(io.StringIO(content))
             st.caption(f"{len(df_csv):,} rows × {len(df_csv.columns)} columns")
-            st.dataframe(df_csv, hide_index=True, use_container_width=True)
+            st.dataframe(df_csv, hide_index=True, width="stretch")
         except Exception:
             st.code(content[:5000], language="plaintext")
     else:

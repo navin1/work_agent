@@ -309,7 +309,7 @@ def render_dag_list(raw_json: str) -> None:
         )
 
     st.caption(f"**{len(dags)}** DAGs in **{env}**")
-    st.dataframe(df, hide_index=True, use_container_width=True, column_config=col_config)
+    st.dataframe(df, hide_index=True, width="stretch", column_config=col_config)
 
     col1, _ = st.columns([1, 5])
     with col1:
@@ -455,7 +455,7 @@ def render_dag_task_graph(raw_json: str, is_history: bool = False) -> None:
     if airflow_url and "Airflow" in df.columns:
         col_config["Airflow"] = st.column_config.LinkColumn("Airflow ↗", display_text="Open ↗")
 
-    st.dataframe(df, hide_index=True, use_container_width=True,
+    st.dataframe(df, hide_index=True, width="stretch",
                  column_config=col_config if col_config else None)
 
     col1, _ = st.columns([1, 5])
@@ -547,7 +547,7 @@ def render_dag_details(raw_json: str) -> None:
             for t in tasks
         ]
         st.caption(f"**{dag_id}**  ·  {len(tasks)} task(s)")
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
     if source and source != "(source not available)":
         with st.expander("DAG source", expanded=False):
