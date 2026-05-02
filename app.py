@@ -556,8 +556,7 @@ def _run_batch_validation(batch: dict) -> None:
     except Exception as exc:
         st.warning(f"Excel export failed: {exc}")
 
-    st.divider()
-    _mvp.render_export_result(export_payload)
+    return export_payload
 
 
 # ── Chat input & state ────────────────────────────────────────────────────────
@@ -597,8 +596,10 @@ for _i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if "panels" in msg:
-                is_hist = (_i != _last_assistant_idx) or bool(_active_prompt)
-                dispatch_renderers(msg["panels"], is_history=is_hist)
+            is_hist = (_i != _last_assistant_idx) or bool(_active_prompt)
+            dispatch_renderers(msg["panels"], is_history=is_hist)
+        if "batch_result" in msg:
+            _mvp.render_export_result(msg["batch_result"])
 
 
 # ── Process active prompt ─────────────────────────────────────────────────────
@@ -648,7 +649,11 @@ if _active_prompt:
         # Phase 2: per-file validation loop — rendered at TOP LEVEL so st.status()
         # and st.empty() update the browser in real time (chat containers batch renders).
         if _disc and not _disc.get("error") and _disc.get("files"):
-            _run_batch_validation(_disc)
+            _export = _run_batch_validation(_disc)
+            # Attach export payload to the last assistant message so the
+            # consolidated result survives st.rerun() and renders from history.
+            if _export and st.session_state.messages:
+                st.session_state.messages[-1]["batch_result"] = _export
 
     else:
         # ── Normal agent path ─────────────────────────────────────────────────
