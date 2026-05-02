@@ -458,7 +458,7 @@ def _discover_files_for_batch(user_message: str) -> dict | None:
         return None
 
 
-def _run_batch_validation(batch: dict) -> None:
+def _run_batch_validation(batch: dict) -> dict:
     """Run per-file validation with real-time st.status() progress, then show consolidated view."""
     import json
     from pathlib import Path
@@ -472,16 +472,29 @@ def _run_batch_validation(batch: dict) -> None:
     env_label      = batch.get("env_label", "local")
     warnings       = batch.get("warnings", [])
 
-    from tools.mapping_validation_tools import _do_validate_mapping
-    from tools.excel_tools import export_validation_excel
+    from tools.mapping_validation_tools import _do_validate_mapping, _result_cache
+    from tools.excel_tools import export_validation_excel, ingest_excel_files
     from core import config as _cfg
 
     for w in warnings:
         st.warning(w)
 
+    # Re-ingest to guarantee all staged files are in the registry before the loop.
+    # discover_mapping_files() already ingested them, but a silent failure there would
+    # cause every _do_validate_mapping call to return an error dict immediately.
+    try:
+        ingest_excel_files()
+    except Exception as _ie:
+        st.warning(f"Pre-validation ingest warning: {_ie}")
+
+    # Evict any stale error-result cache entries so failed files are retried.
+    stale = [k for k, v in list(_result_cache.items()) if v.get("error")]
+    for k in stale:
+        _result_cache.pop(k, None)
+
     running = {
         "pass": 0, "fail": 0, "partial": 0,
-        "not_applicable": 0, "not_evaluated": 0, "total": 0,
+        "not_applicable": 0, "not_evaluated": 0, "error": 0, "total": 0,
     }
     validated: list[dict] = []
 
@@ -491,15 +504,18 @@ def _run_batch_validation(batch: dict) -> None:
     def _refresh_scorecards() -> None:
         with score_placeholder.container():
             st.markdown("**📊 Consolidated Validation Status**")
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
+            c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
             c1.metric("🟢 PASS",     running["pass"])
             c2.metric("🔴 FAIL",     running["fail"])
             c3.metric("🟡 PARTIAL",  running["partial"])
             c4.metric("⚪ N/A",      running["not_applicable"])
             c5.metric("🔵 Not Eval", running["not_evaluated"])
-            c6.metric("Total",       running["total"])
+            c6.metric("⚠️ Error",    running["error"])
+            c7.metric("Total",       running["total"])
 
     _refresh_scorecards()
+
+    file_errors: list[str] = []  # accumulated outside status so they survive collapse
 
     with st.status(f"Validating {len(files)} file(s)…", expanded=True) as _status:
         for idx, file_info in enumerate(files):
@@ -524,7 +540,12 @@ def _run_batch_validation(batch: dict) -> None:
             if result.get("error"):
                 err_msg = result["error"]
                 hint    = result.get("hint", "")
-                st.warning(f"⚠️ **{file_name}**: {err_msg}" + (f" — {hint}" if hint else ""))
+                full_err = f"**{file_name}**: {err_msg}" + (f" — {hint}" if hint else "")
+                st.warning(f"⚠️ {full_err}")
+                file_errors.append(full_err)
+                running["error"] += 1
+                running["total"] += 1
+                _refresh_scorecards()
                 continue
 
             s = result.get("summary") or {}
@@ -544,9 +565,19 @@ def _run_batch_validation(batch: dict) -> None:
                 unsafe_allow_html=True,
             )
 
+        good = len(files) - running["error"]
         _status.update(
-            label=f"✅ Validated {len(files)} file(s)", state="complete", expanded=False
+            label=f"✅ Validated {good}/{len(files)} file(s)" +
+                  (f" — {running['error']} error(s)" if running["error"] else ""),
+            state="complete",
+            expanded=False,
         )
+
+    # Show file errors OUTSIDE the collapsible status so they stay visible after collapse.
+    if file_errors:
+        with st.expander(f"⚠️ {len(file_errors)} file(s) failed — click to see errors", expanded=True):
+            for e in file_errors:
+                st.warning(e)
 
     # Generate Excel and build the export payload for render_export_result
     export_payload: dict = {
