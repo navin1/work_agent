@@ -1940,21 +1940,20 @@ def _do_validate_mapping(
 					if verdict_data:
 						out.update(verdict_data)
 
-						# Refine SQL file if rule passed
-						if out.get("verdict") == "PASS":
-							exact_file = None
-							if matched_tid:
-								exact_file = task_files.get(matched_tid)
-							else:
-								evidence = out.get("evidence", "")
-								if evidence:
-									norm_ev = " ".join(evidence.split())
-									for tid, t_sql in task_sqls.items():
-										if norm_ev in " ".join(t_sql.split()):
-											exact_file = task_files.get(tid)
-											break
-							if exact_file:
-								out["sql_file"] = exact_file
+						# Refine SQL file to the specific file evaluated
+						exact_file = None
+						if matched_tid:
+							exact_file = task_files.get(matched_tid)
+						else:
+							evidence = out.get("evidence", "")
+							if evidence:
+								norm_ev = " ".join(evidence.split())
+								for tid, t_sql in task_sqls.items():
+									if norm_ev in " ".join(t_sql.split()):
+										exact_file = task_files.get(tid)
+										break
+						if exact_file:
+							out["sql_file"] = exact_file
 
 						v = out["verdict"].lower().replace(" ", "_")
 						if v in summary:
