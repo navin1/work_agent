@@ -405,11 +405,26 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
 
 # ── Batch validation loop (Streamlit-controlled, real-time progress) ─────────
 
-_BATCH_RE = __import__("re").compile(
-    r"validate\s+(all|folder|all\s+files?|the\s+folder|all\s+in|all\s+mapping|all\s+excel)"
-    r"|batch\s+validate|run\s+(all|on\s+all)\s+mapping",
-    __import__("re").IGNORECASE,
-)
+import re as _re
+
+
+def _is_batch_request(msg: str) -> bool:
+    """Return True when the message is asking to validate a folder / all files.
+
+    Rules (all must hold):
+    - mentions validation or mapping or excel context
+    - mentions a multi-file indicator (folder / all / batch / multiple)
+    - does NOT name a specific .xlsx file (which would be a single-file request)
+    """
+    m = msg.lower()
+    has_context = bool(_re.search(r"validat|mapping|excel", m))
+    has_multi   = bool(_re.search(
+        r"\bfolder\b|\ball\b|\bbatch\b|\bmultiple\b|\ball\s+files?\b"
+        r"|\ball\s+excel\b|\ball\s+mapping\b|\bthe\s+folder\b",
+        m,
+    ))
+    has_specific_file = bool(_re.search(r"\w+\.xlsx", m))
+    return has_context and has_multi and not has_specific_file
 
 
 def _discover_files_for_batch(user_message: str) -> dict | None:
@@ -593,14 +608,29 @@ if _active_prompt:
     with st.chat_message("user"):
         st.markdown(_active_prompt)
 
-    if _BATCH_RE.search(_active_prompt):
+    if _is_batch_request(_active_prompt):
         # ── Batch path: one-shot param extraction → Streamlit-owned loop ──────
         with st.chat_message("assistant"):
             with st.spinner("Finding mapping files…"):
                 _disc = _discover_files_for_batch(_active_prompt)
 
-            if not _disc or _disc.get("error"):
-                _err = (_disc or {}).get("error", "Could not discover mapping files.")
+            if _disc is None:
+                # LLM couldn't extract params — fall back to the normal agent path
+                with st.spinner("Thinking…"):
+                    from agent.agent import run_agent
+                    result = run_agent(st.session_state.agent, _active_prompt)
+                st.markdown(result.get("output", ""))
+                dispatch_renderers(result)
+                _reply = result.get("output", "")
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": _reply,
+                    "panels": result,
+                })
+                st.session_state._pending_input = None
+                st.rerun()
+            elif _disc.get("error"):
+                _err = _disc["error"]
                 st.error(_err)
                 _reply = _err
             elif not _disc.get("files"):
