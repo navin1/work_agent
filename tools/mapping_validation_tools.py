@@ -874,23 +874,58 @@ def _extract_sql_from_python(
                 return path_reader(path_str)
             return None
 
+        def _glob_sql_dir(dir_part: str) -> "str | None":
+            """Return concatenated content of all .sql files in dir_part.
+
+            Used when the include/sql path contains an unresolved loop variable
+            (e.g. bq_sql/__VAR__.sql from f"bq_sql/{task_var}.sql").
+            Searches file_dir, template_searchpaths, and their parents.
+            """
+            dir_part = dir_part.strip().lstrip("/")
+            search_bases = [file_dir] + template_searchpaths + list(file_dir.parents)
+            for base in search_bases:
+                sql_dir = (base / dir_part).resolve()
+                if sql_dir.is_dir():
+                    files = sorted(sql_dir.glob("*.sql"))
+                    if files:
+                        return "\n\n".join(
+                            f.read_text(encoding="utf-8", errors="replace")
+                            for f in files
+                        )
+            return None
+
         def _resolve_sql_val(sql_str: str) -> "str | None":
             """Resolve a raw sql= value: include directive, .sql path, or inline SQL."""
             s = sql_str.strip()
             # Jinja {% include 'path.sql' %}
             m = re.search(r"""{%-?\s*include\s+['"]([^'"]+)['"]\s*-?%}""", s)
             if m:
-                return _resolve_sql_path(m.group(1))
+                include_path = m.group(1)
+                content = _resolve_sql_path(include_path)
+                if content:
+                    return content
+                # Unresolved loop variable in the include path — glob the directory
+                dir_part = str(Path(include_path).parent)
+                if dir_part and dir_part != ".":
+                    return _glob_sql_dir(dir_part)
+                return None
             # Plain .sql file path (may contain __VAR__ from f-string resolution)
             if s.endswith(".sql"):
                 content = _resolve_sql_path(s)
                 if content:
                     return content
-                # If __VAR__ is in the path, strip it and try just the filename
+                # __VAR__ means an unresolved loop/f-string variable in the filename
                 if "__VAR__" in s:
+                    # Try stripping __VAR__ from the filename first
                     filename = Path(s).name.replace("__VAR__", "")
                     if filename.endswith(".sql"):
-                        return _resolve_sql_path(filename)
+                        found = _resolve_sql_path(filename)
+                        if found:
+                            return found
+                    # Fall back to globbing the directory
+                    dir_part = str(Path(s).parent)
+                    if dir_part and dir_part != ".":
+                        return _glob_sql_dir(dir_part)
                 return None
             # Inline SQL
             if _looks_like_sql(s):
