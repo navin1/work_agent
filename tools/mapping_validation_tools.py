@@ -1972,26 +1972,20 @@ def _do_validate_mapping(
 						summary["error"] += 1
 
 					# ── Assign SQL file based on verdict and master file list ──────
-					verdict_upper = out.get("verdict", "").upper()
 					if master_files:
 						# Confirmed files (DML + table name verified) — same for all verdicts
 						out["sql_file"]   = ", ".join(master_files)
 						out["match_type"] = master_match_type
-					elif verdict_upper == "PASS":
-						# PASS proves the SQL was evaluated and the rule confirmed.
-						# Even if no file was isolated, show everything evaluated —
-						# the confirmation came from their merged content.
+					else:
+						# No confirmed file, but SQL was evaluated — show what was fed to the LLM.
+						# reason/evidence proves evaluation happened, so the file list is knowable.
 						all_evaluated = sorted({
 							fp
 							for fval in task_files.values()
 							for fp in fval.split(", ") if fp
 						})
 						out["sql_file"]   = ", ".join(all_evaluated) if all_evaluated else ""
-						out["match_type"] = "Merged" if all_evaluated else "Direct"
-					else:
-						# FAIL / PARTIAL / ERROR with no confirmed file → honest blank
-						out["sql_file"]   = ""
-						out["match_type"] = "Unresolved"
+						out["match_type"] = "Merged" if all_evaluated else "Unresolved"
 
 				evaluated_rules.append(out)
 
