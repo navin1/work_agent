@@ -538,13 +538,16 @@ def _run_batch_validation(batch: dict) -> dict:
             validated.append(result)
 
             if result.get("error"):
-                err_msg = result["error"]
-                hint    = result.get("hint", "")
-                full_err = f"**{file_name}**: {err_msg}" + (f" — {hint}" if hint else "")
+                err_msg  = result["error"]
+                hint     = result.get("hint", "")
+                avail    = result.get("available_columns")
+                detail   = f" — {hint}" if hint else ""
+                detail  += f" | columns: {avail}" if avail else ""
+                full_err = f"{file_name}: {err_msg}{detail}"
                 st.warning(f"⚠️ {full_err}")
                 file_errors.append(full_err)
                 running["error"] += 1
-                running["total"] += 1
+                # do NOT add to running["total"] — total counts rules, not files
                 _refresh_scorecards()
                 continue
 
@@ -584,7 +587,8 @@ def _run_batch_validation(batch: dict) -> dict:
         "is_export":       True,
         "files_exported":  len(validated),
         "overall_summary": running,
-        "results":         validated,   # full results — render_export_result handles them
+        "results":         validated,
+        "file_errors":     file_errors,  # persists through st.rerun() via session_state
     }
     try:
         out = export_validation_excel(validated, env_label, Path(_cfg.EXPORTS_ROOT))

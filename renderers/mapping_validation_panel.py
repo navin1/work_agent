@@ -395,6 +395,13 @@ def render_export_result(raw_json: str) -> None:
     ovr = data.get("overall_summary", {})
     _render_scorecards(ovr)
 
+    # File-level errors (persisted from batch loop — survive st.rerun())
+    file_errors = data.get("file_errors", [])
+    if file_errors:
+        with st.expander(f"⚠️ {len(file_errors)} file(s) could not be validated", expanded=True):
+            for e in file_errors:
+                st.warning(e)
+
     # Per-file completed sections
     results = data.get("results", [])
     for res in results:
