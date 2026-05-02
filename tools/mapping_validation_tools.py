@@ -79,6 +79,7 @@ def precompute_dag_discovery(
 	task_sqls: "dict[str, str]",
 	task_files: "dict[str, str]",
 	bq_labels: "list[str]",
+	mapping_file_stem: str = "",
 ) -> "dict[str, dict]":
 	"""Single-pass DAG scan: resolve each BQ table label to its SQL file(s) and match type.
 
@@ -86,21 +87,48 @@ def precompute_dag_discovery(
 	Tier 2 — SQL filename stem contains table name      → match_type "Filename"
 	Tier 3 — DML file with unresolved placeholders      → match_type "Unresolved"
 	Tier 4 — All DAG SQL files (or task IDs if no files)→ match_type "Unresolved"
+
+	For multi-file task entries (loop DAGs), Tier 1 applies an additional stem
+	narrowing step so only the matching file is returned, not the full list.
+
+	When no valid BQ FQN is available, mapping_file_stem is used as a proxy
+	for Tier 2 narrowing before falling back to Tier 4.
 	"""
 	discovery: dict[str, dict] = {}
 
+	def _resolve_files(tid: str, short: str) -> set[str]:
+		"""Return candidate file paths for a task, narrowing multi-file entries by stem."""
+		file_val = task_files.get(tid, "") or f"task_id:{tid}"
+		parts = [fp for fp in file_val.split(", ") if fp]
+		if len(parts) > 1 and short:
+			narrowed = [fp for fp in parts if short in Path(fp).stem.lower()]
+			return set(narrowed) if narrowed else set(parts)
+		return set(parts)
+
+	def _tier4_all() -> "tuple[set[str], str]":
+		"""Return all known DAG SQL files, falling back to task IDs in composer mode."""
+		files: set[str] = set()
+		for fstr in task_files.values():
+			files.update(fp for fp in fstr.split(", ") if fp)
+		if not files:
+			files.update(f"task_id:{tid}" for tid in task_sqls)
+		return files, "Unresolved"
+
 	for label in bq_labels:
 		if label == "(no BQ table configured)" or not is_valid_fqn(label):
-			# No target BQ table known — skip targeted tiers, go straight to Tier 4
-			all_files: set[str] = set()
-			for file_path_str in task_files.values():
-				all_files.update(fp for fp in file_path_str.split(", ") if fp)
-			if not all_files:
-				all_files.update(f"task_id:{tid}" for tid in task_sqls)
-			discovery[label] = {
-				"files": ", ".join(sorted(all_files)) or "",
-				"type":  "Unresolved",
-			}
+			# No BQ FQN — try Tier 2 narrowing via mapping file stem, then Tier 4
+			stem_hint = mapping_file_stem.lower()
+			narrowed: set[str] = set()
+			if stem_hint:
+				for fstr in task_files.values():
+					for fp in fstr.split(", "):
+						if fp and stem_hint in Path(fp).stem.lower():
+							narrowed.add(fp)
+			if narrowed:
+				discovery[label] = {"files": ", ".join(sorted(narrowed)), "type": "Filename"}
+			else:
+				files, mtype = _tier4_all()
+				discovery[label] = {"files": ", ".join(sorted(files)) or "", "type": mtype}
 			continue
 
 		variants   = get_search_variants(label)
@@ -114,14 +142,13 @@ def precompute_dag_discovery(
 				re.search(rf'\b{re.escape(v)}\b', content, re.IGNORECASE)
 				for v in variants
 			):
-				file_val = task_files.get(tid, "") or f"task_id:{tid}"
-				candidates.update(fp for fp in file_val.split(", ") if fp)
+				candidates.update(_resolve_files(tid, short_name))
 				match_type = "Direct"
 
 		# ── Tier 2: Filename stem contains table short-name ──────────────────
 		if not candidates:
-			for file_path_str in task_files.values():
-				for fp in file_path_str.split(", "):
+			for fstr in task_files.values():
+				for fp in fstr.split(", "):
 					if fp and short_name in Path(fp).stem.lower():
 						candidates.add(fp)
 			if candidates:
@@ -133,16 +160,11 @@ def precompute_dag_discovery(
 				if _DML_REGEX.search(content) and (
 					"__VAR__" in content or "{{" in content
 				):
-					file_val = task_files.get(tid, "") or f"task_id:{tid}"
-					candidates.update(fp for fp in file_val.split(", ") if fp)
+					candidates.update(_resolve_files(tid, short_name))
 
 		# ── Tier 4: All DAG SQL files (exhaustive fallback) ──────────────────
 		if not candidates:
-			for file_path_str in task_files.values():
-				candidates.update(fp for fp in file_path_str.split(", ") if fp)
-			if not candidates:
-				# Composer mode — no task_files; record task IDs as pointers
-				candidates.update(f"task_id:{tid}" for tid in task_sqls)
+			candidates, match_type = _tier4_all()
 
 		discovery[label] = {
 			"files": ", ".join(sorted(candidates)),
@@ -1844,7 +1866,10 @@ def _do_validate_mapping(
 				bq_groups.setdefault("(no BQ table configured)", []).append(rule)
 
 		# ── Pre-compute SQL file discovery for all BQ table labels ────────────
-		discovery_map = precompute_dag_discovery(task_sqls, task_files, list(bq_groups.keys()))
+		discovery_map = precompute_dag_discovery(
+			task_sqls, task_files, list(bq_groups.keys()),
+			mapping_file_stem=file_stem,
+		)
 
 		# ── Evaluate rules ────────────────────────────────────────────────────
 		summary = {
