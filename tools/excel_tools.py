@@ -115,7 +115,7 @@ def export_validation_excel(
         tab      = _vx_safe_tab(stem, used)
         used.add(tab)
         ws       = wb.create_sheet(title=tab)
-        _vx_header_row(ws, ["Column", "Status", "Confidence", "Reason", "Evidence", "SQL File"])
+        _vx_header_row(ws, ["Column", "Match Type", "Status", "Confidence", "SQL File", "Reason", "Evidence"])
         ws.row_dimensions[1].height = 20
 
         row = 2
@@ -128,11 +128,12 @@ def export_validation_excel(
                 for col_name in (rule.get("target_columns") or [""]):
                     for ci, (val, aln) in enumerate([
                         (col_name,                       Alignment(horizontal="left")),
+                        (rule.get("match_type",     ""), _VX_CENTER),
                         (status_label,                   _VX_CENTER),
                         (rule.get("confidence_tier",""), _VX_CENTER),
+                        (rule.get("sql_file",       ""), _VX_WRAP),
                         (rule.get("reason",         ""), _VX_WRAP),
                         (rule.get("evidence",       ""), _VX_WRAP),
-                        (rule.get("sql_file",       ""), _VX_WRAP),
                     ], 1):
                         cell = ws.cell(row=row, column=ci, value=val)
                         cell.alignment = aln
@@ -142,7 +143,7 @@ def export_validation_excel(
                     ws.row_dimensions[row].height = 30
                     row += 1
 
-        _vx_col_widths(ws, [28, 16, 13, 65, 55, 40])
+        _vx_col_widths(ws, [28, 14, 16, 13, 40, 65, 55])
         ws.freeze_panes = "A2"
 
     wb.save(out_path)

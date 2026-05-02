@@ -57,6 +57,91 @@ _NA_PATTERN = re.compile(
 	re.IGNORECASE,
 )
 
+# Matches data-persisting SQL commands; deliberately excludes CREATE VIEW.
+_DML_REGEX = re.compile(
+	r'\b(INSERT|MERGE|UPDATE|DELETE|TRUNCATE|CREATE(\s+OR\s+REPLACE)?\s+TABLE)\b',
+	re.IGNORECASE,
+)
+
+
+def get_search_variants(fqn: str) -> list[str]:
+	"""Return name variants for a BQ FQN: [project.dataset.table, dataset.table, table]."""
+	parts = fqn.split(".")
+	return [".".join(parts[-i:]) for i in range(len(parts), 0, -1)]
+
+
+def is_valid_fqn(key: str) -> bool:
+	"""True if key looks like a real BQ table identifier (has a dot, no spaces/parens)."""
+	return "." in key and not any(c in key for c in (" ", "(", ")"))
+
+
+def precompute_dag_discovery(
+	task_sqls: "dict[str, str]",
+	task_files: "dict[str, str]",
+	bq_labels: "list[str]",
+) -> "dict[str, dict]":
+	"""Single-pass DAG scan: resolve each BQ table label to its SQL file(s) and match type.
+
+	Tier 1 — DML + FQN variant in SQL content          → match_type "Direct"
+	Tier 2 — SQL filename stem contains table name      → match_type "Filename"
+	Tier 3 — DML file with unresolved placeholders      → match_type "Unresolved"
+	Tier 4 — All DAG SQL files (or task IDs if no files)→ match_type "Unresolved"
+	"""
+	discovery: dict[str, dict] = {}
+
+	for label in bq_labels:
+		if label == "(no BQ table configured)" or not is_valid_fqn(label):
+			discovery[label] = {"files": "N/A", "type": "N/A"}
+			continue
+
+		variants   = get_search_variants(label)
+		short_name = variants[-1].lower()
+		candidates: set[str] = set()
+		match_type = "Unresolved"
+
+		# ── Tier 1: DML + FQN variant content match ──────────────────────────
+		for tid, content in task_sqls.items():
+			if _DML_REGEX.search(content) and any(
+				re.search(rf'\b{re.escape(v)}\b', content, re.IGNORECASE)
+				for v in variants
+			):
+				file_val = task_files.get(tid, "") or f"task_id:{tid}"
+				candidates.update(fp for fp in file_val.split(", ") if fp)
+				match_type = "Direct"
+
+		# ── Tier 2: Filename stem contains table short-name ──────────────────
+		if not candidates:
+			for file_path_str in task_files.values():
+				for fp in file_path_str.split(", "):
+					if fp and short_name in Path(fp).stem.lower():
+						candidates.add(fp)
+			if candidates:
+				match_type = "Filename"
+
+		# ── Tier 3: DML files with unresolved placeholders ───────────────────
+		if not candidates:
+			for tid, content in task_sqls.items():
+				if _DML_REGEX.search(content) and (
+					"__VAR__" in content or "{{" in content
+				):
+					file_val = task_files.get(tid, "") or f"task_id:{tid}"
+					candidates.update(fp for fp in file_val.split(", ") if fp)
+
+		# ── Tier 4: All DAG SQL files (exhaustive fallback) ──────────────────
+		if not candidates:
+			for file_path_str in task_files.values():
+				candidates.update(fp for fp in file_path_str.split(", ") if fp)
+			if not candidates:
+				# Composer mode — no task_files; record task IDs as pointers
+				candidates.update(f"task_id:{tid}" for tid in task_sqls)
+
+		discovery[label] = {
+			"files": ", ".join(sorted(candidates)),
+			"type":  match_type,
+		}
+
+	return discovery
+
 
 # ── Column detection helpers ──────────────────────────────────────────────────
 
@@ -1737,22 +1822,6 @@ def _do_validate_mapping(
 						return s
 			return merged_structure
 
-		def _sql_file_for_bq(bq_hint: str | None) -> str:
-			"""Return the SQL file path for the task that matches bq_hint, or all files."""
-			if bq_hint:
-				hint_norm = _norm(bq_hint.split(".")[-1])
-				for tid, s in structures.items():
-					dest = _norm((s.get("destination_table") or "").split(".")[-1])
-					if dest and hint_norm == dest:
-						return task_files.get(tid, "")
-			# No specific match — return union of all known file paths
-			seen, parts = set(), []
-			for v in task_files.values():
-				if v and v not in seen:
-					seen.add(v)
-					parts.append(v)
-			return ", ".join(parts)
-
 		# ── Group rules by BQ table label ─────────────────────────────────────
 		bq_groups: dict[str, list[dict]] = {}
 		for rule in raw_rules:
@@ -1765,6 +1834,9 @@ def _do_validate_mapping(
 			else:
 				bq_groups.setdefault("(no BQ table configured)", []).append(rule)
 
+		# ── Pre-compute SQL file discovery for all BQ table labels ────────────
+		discovery_map = precompute_dag_discovery(task_sqls, task_files, list(bq_groups.keys()))
+
 		# ── Evaluate rules ────────────────────────────────────────────────────
 		summary = {
 			"total": 0, "pass": 0, "fail": 0, "partial": 0,
@@ -1775,7 +1847,9 @@ def _do_validate_mapping(
 
 		for bq_label, group_rules in bq_groups.items():
 			structure = _structure_for_bq(bq_label)
-			sql_file_for_group = _sql_file_for_bq(bq_label)
+			disc               = discovery_map.get(bq_label, {"files": "", "type": "Unresolved"})
+			sql_file_for_group = disc["files"]
+			match_type_for_group = disc["type"]
 			evaluated_rules: list[dict] = []
 
 			# --- BULK EVALUATION EXECUTION ---
@@ -1793,6 +1867,7 @@ def _do_validate_mapping(
 					"rule_type":		rule.get("rule_type", ""),
 					"confidence_tier": rule.get("confidence_tier", ""),
 					"sql_file":		sql_file_for_group,
+					"match_type":	  match_type_for_group,
 					"verdict":		 "",
 					"reason":		  "",
 					"evidence":		 "",
