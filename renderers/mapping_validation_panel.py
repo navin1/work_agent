@@ -402,14 +402,18 @@ def render_export_result(raw_json: str) -> None:
             for e in file_errors:
                 st.warning(e)
 
-    # Per-file completed sections
+    # Per-file summary rows — banner + scorecard only.
+    # bq_table_groups (rule-level detail) is stripped before session storage to
+    # avoid thousands of widgets crashing the browser. Full detail is in the Excel.
     results = data.get("results", [])
     for res in results:
+        if res.get("error"):
+            continue  # errors already shown in the expander above
         st.divider()
         _render_banner(res.get("mapping_file", ""), completed=True)
         _render_scorecards(res.get("summary", {}))
-        _render_file_context(res)
-        _render_mapping_details(res, uid)
+        if res.get("sql_fetch_error"):
+            st.caption(f"⚠️ SQL fetch: {res['sql_fetch_error']}")
 
     # Download at bottom
     st.divider()

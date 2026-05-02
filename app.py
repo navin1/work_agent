@@ -458,34 +458,20 @@ def _discover_files_for_batch(user_message: str) -> dict | None:
         return None
 
 
-_SLIM_RULE_DROP = {"evidence", "relevant_ctes", "relevant_clauses"}
-_SLIM_RESULT_DROP = {"sql_debug"}
+_BATCH_KEEP = {"mapping_file", "summary", "dag_id", "source_mode",
+               "composer_env", "sql_fetch_error", "error", "hint"}
 
 
 def _slim_result(res: dict) -> dict:
-    """Strip bulk fields from a validation result before storing in session state.
+    """Keep only scorecard-level fields for session state storage.
 
-    Keeps everything needed for render_export_result (summary, verdicts, reasons)
-    but removes large SQL snippets and CTE lists that cause browser OOM crashes
-    when 14+ files worth of data are serialised into the Streamlit session.
+    bq_table_groups (potentially thousands of rule widgets) is dropped entirely —
+    the batch consolidated view only needs per-file summary metrics. The Excel
+    export (generated before slimming) retains all rule-level detail.
     """
-    if not isinstance(res, dict) or res.get("error"):
+    if not isinstance(res, dict):
         return res
-    slim = {k: v for k, v in res.items() if k not in _SLIM_RESULT_DROP}
-    groups = slim.get("bq_table_groups")
-    if groups:
-        slim_groups = []
-        for grp in groups:
-            slim_grp = dict(grp)
-            rules = slim_grp.get("rules") or slim_grp.get("evaluated_rules") or []
-            slim_grp_key = "rules" if "rules" in slim_grp else "evaluated_rules"
-            slim_grp[slim_grp_key] = [
-                {k: v for k, v in rule.items() if k not in _SLIM_RULE_DROP}
-                for rule in rules
-            ]
-            slim_groups.append(slim_grp)
-        slim["bq_table_groups"] = slim_groups
-    return slim
+    return {k: v for k, v in res.items() if k in _BATCH_KEEP}
 
 
 def _run_batch_validation(batch: dict) -> dict:
