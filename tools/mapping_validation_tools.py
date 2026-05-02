@@ -1972,16 +1972,24 @@ def _do_validate_mapping(
 						summary["error"] += 1
 
 					# ── Assign SQL file based on verdict and master file list ──────
-					# master_files = files confirmed to contain DML + this BQ table name.
-					# PASS with single file  → that one file (unambiguous).
-					# PASS with multiple     → all confirmed files (all contributed).
-					# FAIL / PARTIAL / ERROR → all confirmed files (reviewer needs them).
-					# Empty master list      → blank (cannot confirm which file applies).
 					verdict_upper = out.get("verdict", "").upper()
 					if master_files:
+						# Confirmed files (DML + table name verified) — same for all verdicts
 						out["sql_file"]   = ", ".join(master_files)
 						out["match_type"] = master_match_type
+					elif verdict_upper == "PASS":
+						# PASS proves the SQL was evaluated and the rule confirmed.
+						# Even if no file was isolated, show everything evaluated —
+						# the confirmation came from their merged content.
+						all_evaluated = sorted({
+							fp
+							for fval in task_files.values()
+							for fp in fval.split(", ") if fp
+						})
+						out["sql_file"]   = ", ".join(all_evaluated) if all_evaluated else ""
+						out["match_type"] = "Merged" if all_evaluated else "Direct"
 					else:
+						# FAIL / PARTIAL / ERROR with no confirmed file → honest blank
 						out["sql_file"]   = ""
 						out["match_type"] = "Unresolved"
 
