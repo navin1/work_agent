@@ -405,6 +405,44 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
 
 # ── Batch validation loop (Streamlit-controlled, real-time progress) ─────────
 
+_BATCH_RE = __import__("re").compile(
+    r"validate\s+(all|folder|all\s+files?|the\s+folder|all\s+in|all\s+mapping|all\s+excel)"
+    r"|batch\s+validate|run\s+(all|on\s+all)\s+mapping",
+    __import__("re").IGNORECASE,
+)
+
+
+def _discover_files_for_batch(user_message: str) -> dict | None:
+    """One-shot LLM call: extract discover_mapping_files params, call the tool, return result.
+
+    Bypasses the full ReAct loop so the UI isn't blocked while the agent loops through files.
+    """
+    import json
+    from langchain_core.messages import SystemMessage, HumanMessage
+    from agent.agent import _llm, _llm_credentials
+    from tools.mapping_validation_tools import discover_mapping_files
+
+    llm = _llm().bind_tools([discover_mapping_files])
+    response = llm.invoke([
+        SystemMessage(content=(
+            "Extract folder/path and validation source parameters from the user's message "
+            "and call discover_mapping_files() exactly once.\n"
+            "source_mode must be 'local', 'git', or 'composer' — infer from context "
+            "(default 'local' when no source is mentioned).\n"
+            "Set composer_env, local_dag_path, git_ref as appropriate.\n"
+            "Return only the tool call — no text."
+        )),
+        HumanMessage(content=user_message),
+    ])
+    if not response.tool_calls:
+        return None
+    try:
+        raw = discover_mapping_files.invoke(response.tool_calls[0]["args"])
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return None
+
+
 def _run_batch_validation(batch: dict) -> None:
     """Run per-file validation with real-time st.status() progress, then show consolidated view."""
     import json
@@ -548,14 +586,6 @@ for _i, msg in enumerate(st.session_state.messages):
                 dispatch_renderers(msg["panels"], is_history=is_hist)
 
 
-# ── Batch validation (triggered after discover_mapping_files, no active prompt) ──
-
-if st.session_state.get("_batch_pending") and not _active_prompt:
-    _batch = st.session_state.pop("_batch_pending")
-    with st.chat_message("assistant"):
-        _run_batch_validation(_batch)
-
-
 # ── Process active prompt ─────────────────────────────────────────────────────
 
 if _active_prompt:
@@ -563,18 +593,44 @@ if _active_prompt:
     with st.chat_message("user"):
         st.markdown(_active_prompt)
 
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking…"):
-            from agent.agent import run_agent
-            result = run_agent(st.session_state.agent, _active_prompt)
-        st.markdown(result.get("output", ""))
-        dispatch_renderers(result)
+    if _BATCH_RE.search(_active_prompt):
+        # ── Batch path: one-shot param extraction → Streamlit-owned loop ──────
+        with st.chat_message("assistant"):
+            with st.spinner("Finding mapping files…"):
+                _disc = _discover_files_for_batch(_active_prompt)
 
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": result.get("output", ""),
-        "panels": result,
-    })
+            if not _disc or _disc.get("error"):
+                _err = (_disc or {}).get("error", "Could not discover mapping files.")
+                st.error(_err)
+                _reply = _err
+            elif not _disc.get("files"):
+                st.warning("No .xlsx mapping files found in the specified location.")
+                _reply = "No mapping files found."
+            else:
+                n = _disc["total"]
+                _reply = f"Found {n} file(s) — starting validation now."
+                st.markdown(_reply)
+                _run_batch_validation(_disc)
+
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": _reply,
+        })
+
+    else:
+        # ── Normal agent path ─────────────────────────────────────────────────
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking…"):
+                from agent.agent import run_agent
+                result = run_agent(st.session_state.agent, _active_prompt)
+            st.markdown(result.get("output", ""))
+            dispatch_renderers(result)
+
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": result.get("output", ""),
+            "panels": result,
+        })
 
     st.session_state._pending_input = None
     st.rerun()
