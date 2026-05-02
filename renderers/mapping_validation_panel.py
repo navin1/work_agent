@@ -37,27 +37,43 @@ def _render_banner(
     else:
         icon, label, bg, border = "⏳", "Processing", "#EFF6FF", "#1D4ED8"
 
-    dag_part = f" &nbsp;·&nbsp; DAG: <span style='font-weight:500'>{dag_id}</span>" if dag_id else ""
+    dag_part = (
+        f" &nbsp;·&nbsp; DAG: <span style='font-weight:500'>{dag_id}</span>"
+        if dag_id else ""
+    )
 
-    counts_part = ""
     if summary:
         s = summary or {}
-        counts_part = (
-            f"&nbsp;&nbsp;&nbsp;&nbsp;"
-            f"🟢 {s.get('pass',0)}&nbsp;&nbsp;"
-            f"🔴 {s.get('fail',0)}&nbsp;&nbsp;"
-            f"🟡 {s.get('partial',0)}&nbsp;&nbsp;"
-            f"⚪ {s.get('not_applicable',0)}&nbsp;&nbsp;"
-            f"🔵 {s.get('not_evaluated',0)}&nbsp;&nbsp;"
-            f"<span style='font-weight:600'>Total = {s.get('total',0)}</span>"
+        metrics = [
+            ("🟢", s.get("pass",           0)),
+            ("🔴", s.get("fail",           0)),
+            ("🟡", s.get("partial",        0)),
+            ("⚪", s.get("not_applicable", 0)),
+            ("🔵", s.get("not_evaluated",  0)),
+        ]
+        metric_spans = "".join(
+            f'<span style="min-width:48px;text-align:left;">{icon}&nbsp;{val}</span>'
+            for icon, val in metrics
         )
+        total_span = (
+            f'<span style="min-width:72px;text-align:left;font-weight:600;">'
+            f'Total&nbsp;=&nbsp;{s.get("total", 0)}</span>'
+        )
+        counts_html = (
+            f'<div style="width:40%;display:flex;align-items:center;'
+            f'justify-content:flex-start;gap:4px;font-size:13px;color:#374151;">'
+            f'{metric_spans}{total_span}</div>'
+        )
+    else:
+        counts_html = '<div style="width:40%;"></div>'
 
     st.markdown(
         f'<div style="background:{bg};border-left:4px solid {border};'
         f'padding:10px 16px;border-radius:4px;margin:6px 0 4px;'
-        f'display:flex;align-items:center;justify-content:space-between;">'
-        f'<span style="font-weight:700;font-size:14px;">📋 {label}: {file_name}{dag_part}</span>'
-        f'<span style="font-size:13px;color:#374151;">{counts_part}</span>'
+        f'display:flex;align-items:center;">'
+        f'<div style="width:60%;font-weight:700;font-size:14px;">'
+        f'📋 {label}: {file_name}{dag_part}</div>'
+        f'{counts_html}'
         f'</div>',
         unsafe_allow_html=True,
     )
