@@ -91,7 +91,16 @@ def precompute_dag_discovery(
 
 	for label in bq_labels:
 		if label == "(no BQ table configured)" or not is_valid_fqn(label):
-			discovery[label] = {"files": "N/A", "type": "N/A"}
+			# No target BQ table known — skip targeted tiers, go straight to Tier 4
+			all_files: set[str] = set()
+			for file_path_str in task_files.values():
+				all_files.update(fp for fp in file_path_str.split(", ") if fp)
+			if not all_files:
+				all_files.update(f"task_id:{tid}" for tid in task_sqls)
+			discovery[label] = {
+				"files": ", ".join(sorted(all_files)) or "",
+				"type":  "Unresolved",
+			}
 			continue
 
 		variants   = get_search_variants(label)
