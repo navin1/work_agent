@@ -1,4 +1,4 @@
-"""Glossary expansion and workspace injection before prompts reach the agent."""
+"""Glossary expansion and workspace injection before prompts reach the kernel."""
 import re
 from datetime import datetime, timezone
 

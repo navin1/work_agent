@@ -38,7 +38,7 @@ def _excel_state() -> dict:
             state["loaded"] = result.get("loaded", 0)
             state["skipped"] = result.get("skipped", 0)
         except Exception as e:
-            # Excel failure must not block the agent — Composer/BQ tools work independently
+            # Excel failure must not block the kernel — Composer/BQ skills work independently
             state["error"] = str(e)
         finally:
             state["done"] = True
@@ -50,16 +50,13 @@ _excel_state()
 
 # ── Session state ─────────────────────────────────────────────────────────────
 
-from agent.system_prompt import _PROMPT_VERSION as _AGENT_PROMPT_VER
-
 if "show_runbook" not in st.session_state:
     st.session_state.show_runbook = False
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "agent" not in st.session_state or st.session_state.get("_agent_prompt_ver") != _AGENT_PROMPT_VER:
-    from agent.agent import build_agent
-    st.session_state.agent = build_agent()
-    st.session_state._agent_prompt_ver = _AGENT_PROMPT_VER
+if "kernel" not in st.session_state:
+    from kernel_bootstrap import create_kernel
+    st.session_state.kernel = create_kernel()
 if "sql_bundle" not in st.session_state:
     st.session_state.sql_bundle = []
 
@@ -286,22 +283,31 @@ import renderers.file_browser as _fb
 import renderers.mapping_validation_panel as _mvp
 
 
-def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
-    steps = agent_output.get("intermediate_steps", [])
-    if not steps:
+def dispatch_renderers(dispatch_result, is_history: bool = False) -> None:
+    from kernel import DispatchOutput
+    if isinstance(dispatch_result, DispatchOutput):
+        tool_calls_list = dispatch_result.tool_calls
+    elif isinstance(dispatch_result, dict):
+        # Legacy format — kept for robustness
+        steps = dispatch_result.get("intermediate_steps", [])
+        tool_calls_list = []
+        for step in steps:
+            try:
+                tool_calls_list.append((step[0].tool, step[1]))
+            except Exception:
+                continue
+    else:
         return
+
+    if not tool_calls_list:
+        return
+
     tools_called: dict[str, str] = {}
-    # validate_mapping_rules may be called once per file in a batch — collect all calls
     validate_mapping_calls: list[str] = []
-    for step in steps:
-        try:
-            tool_name   = step[0].tool
-            tool_output = step[1]
-            tools_called[tool_name] = tool_output   # last-call-wins for single-call tools
-            if tool_name == "validate_mapping_rules":
-                validate_mapping_calls.append(tool_output)
-        except Exception:
-            continue
+    for tool_name, tool_output in tool_calls_list:
+        tools_called[tool_name] = tool_output
+        if tool_name == "validate_mapping_rules":
+            validate_mapping_calls.append(tool_output)
 
     has_lineage = "trace_from_excel" in tools_called
 
@@ -326,7 +332,7 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
 
     if "query_bigquery" in tools_called or "query_excel_data" in tools_called:
         source = "query_bigquery" if "query_bigquery" in tools_called else "query_excel_data"
-        _rt.render(tools_called[source], agent=st.session_state.agent)
+        _rt.render(tools_called[source], kernel=st.session_state.kernel)
 
     if "optimise_sql" in tools_called:
         _dv.render(tools_called["optimise_sql"])
@@ -380,7 +386,7 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
     if "browse_git" in tools_called:
         _fb.render_file_browser(tools_called["browse_git"])
 
-    # Single-file validate_mapping_rules (agent-driven, non-batch)
+    # Single-file validate_mapping_rules (kernel-dispatched, non-batch)
     _has_export = "export_mapping_results" in tools_called
     _batch_mode = len(validate_mapping_calls) > 1 or _has_export
     for _vm_output in validate_mapping_calls:
@@ -392,7 +398,7 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
     if _has_export:
         _mvp.render_export_result(tools_called["export_mapping_results"])
 
-    # Batch trigger: agent called discover_mapping_files → hand off to Streamlit loop
+    # Batch trigger: kernel called discover_mapping_files → hand off to Streamlit loop
     if "discover_mapping_files" in tools_called and not is_history:
         import json as _json
         try:
@@ -405,7 +411,28 @@ def dispatch_renderers(agent_output: dict, is_history: bool = False) -> None:
 
 # ── Batch validation loop (Streamlit-controlled, real-time progress) ─────────
 
+import asyncio as _asyncio
 import re as _re
+
+
+def _run_dispatch(message: str):
+    """Run kernel.dispatch() synchronously from Streamlit's sync context."""
+    import asyncio
+    from kernel import DispatchOutput
+    kernel = st.session_state.kernel
+    history = [
+        {"role": m["role"], "content": m["content"]}
+        for m in st.session_state.messages
+        if m["role"] in ("user", "assistant")
+    ]
+    try:
+        return asyncio.run(kernel.dispatch(message, history))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(kernel.dispatch(message, history))
+        finally:
+            loop.close()
 
 
 def _is_batch_request(msg: str) -> bool:
@@ -428,32 +455,27 @@ def _is_batch_request(msg: str) -> bool:
 
 
 def _discover_files_for_batch(user_message: str) -> dict | None:
-    """One-shot LLM call: extract discover_mapping_files params, call the tool, return result.
+    """Use the kernel to extract discover_mapping_files params and run discovery.
 
-    Bypasses the full ReAct loop so the UI isn't blocked while the agent loops through files.
+    Bypasses the full chat loop so the UI isn't blocked while the kernel validates files.
     """
-    import json
-    from langchain_core.messages import SystemMessage, HumanMessage
-    from agent.agent import _llm, _llm_credentials
-    from tools.mapping_validation_tools import discover_mapping_files
-
-    llm = _llm().bind_tools([discover_mapping_files])
-    response = llm.invoke([
-        SystemMessage(content=(
-            "Extract folder/path and validation source parameters from the user's message "
-            "and call discover_mapping_files() exactly once.\n"
-            "source_mode must be 'local', 'git', or 'composer' — infer from context "
-            "(default 'local' when no source is mentioned).\n"
-            "Set composer_env, local_dag_path, git_ref as appropriate.\n"
-            "Return only the tool call — no text."
-        )),
-        HumanMessage(content=user_message),
-    ])
-    if not response.tool_calls:
+    import json, asyncio
+    kernel = st.session_state.kernel
+    try:
+        out = asyncio.run(kernel.dispatch(user_message))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            out = loop.run_until_complete(kernel.dispatch(user_message))
+        finally:
+            loop.close()
+    if not out.tool_calls:
+        return None
+    action_key, result_json = out.tool_calls[0]
+    if action_key != "discover_mapping_files":
         return None
     try:
-        raw = discover_mapping_files.invoke(response.tool_calls[0]["args"])
-        return json.loads(raw) if isinstance(raw, str) else raw
+        return json.loads(result_json) if isinstance(result_json, str) else result_json
     except Exception:
         return None
 
@@ -673,16 +695,14 @@ if _active_prompt:
                 _disc = _discover_files_for_batch(_active_prompt)
 
             if _disc is None:
-                # LLM couldn't extract params — fall back to the normal agent path
+                # Kernel couldn't extract params — fall back to normal dispatch
                 with st.spinner("Thinking…"):
-                    from agent.agent import run_agent
-                    result = run_agent(st.session_state.agent, _active_prompt)
-                st.markdown(result.get("output", ""))
+                    result = _run_dispatch(_active_prompt)
+                st.markdown(result.output)
                 dispatch_renderers(result)
-                _reply = result.get("output", "")
                 st.session_state.messages.append({
                     "role": "assistant",
-                    "content": _reply,
+                    "content": result.output,
                     "panels": result,
                 })
                 st.session_state._pending_input = None
@@ -712,17 +732,16 @@ if _active_prompt:
                 st.session_state.messages[-1]["batch_result"] = _export
 
     else:
-        # ── Normal agent path ─────────────────────────────────────────────────
+        # ── Normal dispatch path ──────────────────────────────────────────────
         with st.chat_message("assistant"):
             with st.spinner("Thinking…"):
-                from agent.agent import run_agent
-                result = run_agent(st.session_state.agent, _active_prompt)
-            st.markdown(result.get("output", ""))
+                result = _run_dispatch(_active_prompt)
+            st.markdown(result.output)
             dispatch_renderers(result)
 
         st.session_state.messages.append({
             "role": "assistant",
-            "content": result.get("output", ""),
+            "content": result.output,
             "panels": result,
         })
 

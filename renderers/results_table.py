@@ -563,7 +563,7 @@ def render_dag_details(raw_json: str) -> None:
             )
 
 
-def render(raw_json: str, agent=None) -> None:
+def render(raw_json: str, kernel=None) -> None:
     try:
         data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
     except Exception:
@@ -608,8 +608,16 @@ def render(raw_json: str, agent=None) -> None:
         st.download_button("⬇ JSON", json.dumps({"columns": columns, "rows": rows}, default=str),
                            "results.json", mime="application/json", key=f"json_{id(raw_json)}")
     with col3:
-        if agent and st.button("🤖 Explain this result", key=f"explain_{id(raw_json)}"):
+        if kernel and st.button("🤖 Explain this result", key=f"explain_{id(raw_json)}"):
+            import asyncio
             sample = df.head(5).to_dict(orient="records")
-            from agent.agent import run_agent
-            result = run_agent(agent, f"Explain this query result: {row_count} rows returned. Sample data: {json.dumps(sample, default=str)}")
-            st.markdown(result.get("output", ""))
+            prompt = f"Explain this query result: {row_count} rows returned. Sample data: {json.dumps(sample, default=str)}"
+            try:
+                out = asyncio.run(kernel.dispatch(prompt))
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                try:
+                    out = loop.run_until_complete(kernel.dispatch(prompt))
+                finally:
+                    loop.close()
+            st.markdown(out.output)
