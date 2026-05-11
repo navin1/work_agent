@@ -2407,7 +2407,7 @@ def validate_mapping_rules(
 	files_to_process = list(set(files_to_process))
 	
 	if not files_to_process:
-		 return safe_json({
+		return safe_json({
 			"error": f"No Excel file matching '{mapping_file_name}' found in registry.",
 			"hint": "Use list_loaded_tables to see available files.",
 		})

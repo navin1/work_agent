@@ -311,53 +311,69 @@ Override any role by setting the corresponding key in `mapping_columns` in `conf
 
 ## Architecture Overview *(developer reference)*
 
+The platform uses a two-layer architecture. The **skills layer** is the active dispatch path; the **tools layer** contains the underlying implementation functions that skills delegate to.
+
 ```
-app.py                        ← Streamlit entrypoint, session state, chat loop,
+app.py                        ← Streamlit entrypoint, session state, sidebar, chat loop,
                                 renderer dispatcher (dispatch_renderers)
-agent/
-  agent.py                    ← LangGraph ReAct agent builder + run_agent()
-  system_prompt.py            ← Dynamic prompt (workspace, glossary, loaded tables,
-                                mapping validation + excel listing rules)
+kernel_bootstrap.py           ← Wires all primitives + domain skills into a Kernel instance
+kernel.py                     ← Kernel: skill registry, typed invoke(), LLM dispatch()
+base.py                       ← BaseSkill, BaseInput, BaseOutput, ToolOutput contracts
+
+skills/
+  primitives/                 ← Internal building blocks (domain=False, not LLM targets)
+    sql_skill.py              ← DuckDB query execution
+    llm_skill.py              ← Raw LLM call wrapper
+    excel_skill.py            ← Excel file ingest helpers
+  domain/                     ← LLM dispatch targets; InputModel docstring = tool description
+    bigquery_skill.py         ← BQ queries, dataset/table browse, job stats
+    browse_skill.py           ← GCS/Git file browser, fetch
+    code_skill.py             ← read_file, Git/GCS compare, file optimisation
+    composer_skill.py         ← Airflow DAGs, runs, tasks, SQL, logs, snapshots
+    excel_data_skill.py       ← Excel query, file list, DuckDB table access
+    mapping_management_skill.py ← excel_mapping.json config management
+    mapping_skill.py          ← Mapping rule validation (composer/local/git modes)
+    optimizer_skill.py        ← SQL flag analysis, SQL/DAG optimisation, bulk optimise
+    reconciliation_skill.py   ← Three-way Git/GCS/mapping reconciliation
+    schema_skill.py           ← BQ schema introspection, MySQL→BQ schema audit
+    testing_skill.py          ← Query output comparison, optimisation validation
+    user_skill.py             ← Saved queries, glossary, workspace pin, favourites
+
+tools/                        ← Legacy @tool functions — do not extend, primitives import from here
+  bigquery_tools.py
+  browse_tools.py
+  code_tools.py
+  composer_tools.py           ← 12 Airflow tools (DAGs, runs, tasks, SQL, logs)
+  excel_tools.py              ← DuckDB ingest, query, registry, lineage trace
+  mapping_validation_tools.py ← Rule extraction → SQL fetch → Jinja2 → sqlglot → LLM batch
+  optimizer_tools.py
+  reconciliation_tools.py
+  schema_tools.py
+  testing_tools.py
+  user_tools.py
+
+core/
+  config.py                   ← All env vars and constants
+  auth.py                     ← GCP credential provider
+  persistence.py              ← JSON-backed store: glossary, saved queries, validation cache
+  duckdb_manager.py           ← Singleton DuckDB connection
+  workspace.py                ← Pinned workspace read/write
+  system_prompt.py            ← Dynamic system prompt (workspace, glossary, loaded tables)
   preprocessor.py             ← Glossary expansion before prompt hits the LLM
+  audit.py                    ← Structured audit log per skill call
+  llm.py                      ← LLM client factory
+  monaco.py                   ← Monaco editor HTML builder
+  sql_formatter.py            ← SQL pretty-printer; strip_jinja() for AST-safe parsing
+  json_utils.py               ← safe_json serialiser
+
 config/
   excel_mapping.json          ← Per-file config: bq_table (list), dag_names,
                                 mapping_columns role overrides (target/source/logic/…)
-tools/
-  __init__.py                 ← ALL_TOOLS registry (manual — must be kept in sync)
-  bigquery_tools.py           ← BQ query, dataset/table list, job stats
-  browse_tools.py             ← browse_gcs, browse_git, fetch helpers
-  code_tools.py               ← read_file, compare_git_gcs, optimise_file/folder
-  composer_tools.py           ← 12 Airflow tools: DAGs, runs, tasks, SQL, logs
-  excel_tools.py              ← DuckDB ingest, query, registry, lineage trace
-  mapping_validation_tools.py ← validate_mapping_rules: rule extraction → SQL fetch
-                                (composer API / local filesystem / git show) →
-                                Jinja2 resolution (Airflow mock context) →
-                                sqlglot deconstruction → LLM batch evaluation →
-                                L1+L2 verdict cache
-  optimizer_tools.py          ← SQL flags, optimise_sql, optimise_dag, optimise_all
-  reconciliation_tools.py     ← Three-way Git/GCS/mapping reconciliation
-  schema_tools.py             ← BQ schema introspection, MySQL→BQ schema audit
-  testing_tools.py            ← compare_query_outputs, validate_optimisation
-  user_tools.py               ← Saved queries, glossary, workspace pin, favorites
-core/
-  config.py                   ← All env vars and constants (incl. LOCAL_DAG_ROOT,
-                                LOCAL_JINJA_VARS_PATH, LOCAL_GIT_REPO_PATH,
-                                LOCAL_GIT_DEFAULT_BRANCH, LOCAL_GIT_JINJA_VARS_PATH)
-  auth.py                     ← GCP credential provider
-  persistence.py              ← JSON-backed store: registry, glossary, saved queries,
-                                validation_cache (L2 verdict store, max 1 000 entries)
-  duckdb_manager.py           ← Singleton DuckDB connection
-  workspace.py                ← Pinned workspace read/write
-  audit.py                    ← Structured audit log per tool call
-  llm.py                      ← LLM client factory
-  monaco.py                   ← Monaco editor HTML builder (strips \xa0 before render)
-  sql_formatter.py            ← SQL pretty-printer; strip_jinja() for AST-safe parsing
-  json_utils.py               ← safe_json serialiser
+
 renderers/
   results_table.py            ← DAG list, task SQL, BQ/Excel query results
-  mapping_validation_panel.py ← Traceability matrix: rule × verdict × SQL evidence;
-                                verdict filter, Monaco SQL evidence, LOW-conf review btn
-  optimised_file_viewer.py    ← Diff viewer, DAG doc_md panel, file content, folder
+  mapping_validation_panel.py ← Traceability matrix: rule × verdict × SQL evidence
+  optimised_file_viewer.py    ← Diff viewer, DAG doc_md panel, file content, folder zip
   lineage_graph.py            ← Streamlit-flow lineage graph
   file_browser.py             ← GCS/Git file browser with click-to-view
   diff_viewer.py              ← Inline SQL before/after diff
@@ -367,17 +383,27 @@ renderers/
   performance_matrix.py       ← Task performance heat-map
   run_history_chart.py        ← DAG run history chart
   validation_panel.py         ← Optimisation validation verdict
+
 user_data/
   validation_cache.json       ← Persistent verdict cache (sha256 → verdict dict)
+  glossary.json               ← User-defined term expansions
+  saved_queries.json          ← Saved SQL queries
 ```
 
-### Known architectural debt (address as scope grows)
+### How dispatch works
+
+1. `kernel.dispatch(message, history)` preprocesses the message (glossary expansion), then calls the LLM with all domain skill `InputModel`s exposed as tools.
+2. The LLM returns a `tool_call` naming one skill and its structured arguments.
+3. The kernel validates args against `InputModel`, calls `invoke()`, and logs duration.
+4. A follow-up LLM call produces the natural-language summary shown in the chat bubble.
+5. `app.py` receives a `DispatchOutput` with `output` (text) and `tool_calls` (action key + JSON result), then routes the JSON result to the correct renderer.
+
+### Known architectural debt
 
 | Issue | Impact | Fix |
 |---|---|---|
-| `dispatch_renderers` is a 30-branch `if`-chain in `app.py` | Every new tool adds 3 lines; order encodes implicit priority | Convert to `RENDERER_MAP = {"tool_name": fn}` dict |
-| `tools/__init__.py` is manually maintained | New tool requires 2 edits; easy to drift | `@register_tool` decorator or auto-discovery |
-| `composer_tools.py` at 1 177 lines, 12 tools | Hard to navigate, slow to load | Split: `composer_dags.py` / `composer_jobs.py` / `composer_logs.py` |
-| `app.py` mixes CSS, session state, sidebar, chat, dispatch | Growing file, hard to test | Split: `ui/sidebar.py` · `ui/chat.py` · `ui/dispatcher.py` |
-| System prompt is one 231-line string | Domain rules buried; hard to update one area | Compose from `_bq_rules()`, `_composer_rules()`, `_optimisation_rules()` |
-| No automated tests | Regressions silently break tool output shapes | Add `tests/` with unit tests for tool output parsers and renderers |
+| `dispatch_renderers` is a 30-branch `if`-chain in `app.py` | Every new skill adds lines; order encodes implicit priority | Convert to `RENDERER_MAP = {"action_key": fn}` dict |
+| `composer_tools.py` at 1 100+ lines, 12 tools | Hard to navigate | Split: `composer_dags.py` / `composer_jobs.py` / `composer_logs.py` |
+| `app.py` mixes CSS injection, session state, sidebar, chat, dispatch | Growing file, hard to test independently | Split: `ui/sidebar.py` · `ui/chat.py` · `ui/dispatcher.py` |
+| System prompt is one monolithic string in `core/system_prompt.py` | Domain rules buried; hard to update one area | Compose from `_bq_rules()`, `_composer_rules()`, `_mapping_rules()` etc. |
+| No automated tests | Regressions silently break skill output shapes | Add `tests/` with unit tests for skill output parsers and renderers |

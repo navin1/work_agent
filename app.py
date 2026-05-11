@@ -13,8 +13,8 @@ logging.basicConfig(
 )
 
 st.set_page_config(
-    page_title="OSR Data Intelligence",
-    page_icon="⬡",
+    page_title="EDA OSR Data Intelligence",
+    page_icon="config/icons/star.png",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -66,7 +66,7 @@ if "sql_bundle" not in st.session_state:
 st.markdown("""
 <div id="_app_header">
   <button id="_hbtn" title="Toggle sidebar">☰</button>
-  <span class="_header-title">OSR</span>
+  <span class="_header-title">EDA OSR</span>
   <span class="_header-sub">Data Intelligence Platform</span>
   <div class="_header-right">
     <button id="_runbook_btn" class="_header-action">📖 Run Book</button>
@@ -146,7 +146,7 @@ if "js_registered" not in st.session_state:
 with st.sidebar:
     st.markdown("""
     <div class="sidebar-logo">
-      <div class="sidebar-logo-mark">OSR</div>
+      <div class="sidebar-logo-mark">EDA OSR</div>
       <div class="sidebar-logo-sub">Data Intelligence Platform</div>
     </div>
     """, unsafe_allow_html=True)
@@ -162,32 +162,73 @@ with st.sidebar:
         )
 
     # Glossary panel
-    st.markdown('<div class="sidebar-section">📖 Glossary</div>', unsafe_allow_html=True)
     from core import persistence
-    glossary = persistence.get_glossary()
-    if glossary:
-        g_search = st.text_input("Search glossary", key="g_search", placeholder="Search terms…", label_visibility="collapsed")
-        filtered_glossary = {t: d for t, d in glossary.items() if not g_search or g_search.lower() in t.lower() or g_search.lower() in d.lower()}
-        items_html = "".join(
-            f'<div class="glossary-item"><span class="glossary-term">{t}</span>'
-            f'<span class="glossary-def">{d}</span></div>'
-            for t, d in filtered_glossary.items()
-        )
-        count_label = f"{len(filtered_glossary)} of {len(glossary)}" if g_search else str(len(glossary))
-        st.markdown(
-            f'<div class="glossary-count">{count_label} terms</div>'
-            f'<div class="glossary-list">{items_html or "<div class=\'glossary-empty\'>No matches</div>"}</div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        st.caption("No glossary terms yet. Ask the agent to define a term.")
+    with st.expander("📖 Glossary", expanded=False):
+        glossary = persistence.get_glossary()
 
-    with st.expander("＋ Add / Edit Term"):
-        g_term = st.text_input("Term", key="g_term")
-        g_defn = st.text_area("Definition", key="g_defn", height=68)
-        if st.button("Save", key="save_term") and g_term and g_defn:
-            persistence.update_glossary(g_term, g_defn)
-            st.rerun()
+        if "_pending_edit_term" in st.session_state:
+            term = st.session_state.pop("_pending_edit_term")
+            st.session_state["g_term"] = term
+            st.session_state["_active_edit_term"] = term
+            st.session_state["g_defn"] = st.session_state.pop("_pending_edit_defn")
+            st.session_state["glossary_edit_mode"] = True
+            st.session_state.pop("glossary_pending_delete", None)
+
+        if st.session_state.pop("glossary_clear_form", False):
+            st.session_state["g_term"] = ""
+            st.session_state["g_defn"] = ""
+            st.session_state.pop("_active_edit_term", None)
+            
+        _edit_open = st.session_state.get("glossary_edit_mode", False)
+        _active_edit = st.session_state.get("_active_edit_term")
+        _key_locked = bool(_active_edit)
+        with st.expander("＋ Add / Edit Term", expanded=_edit_open):
+            g_term = st.text_input("Term", key="g_term", disabled=_key_locked)
+            g_defn = st.text_area("Definition", key="g_defn", height=68)
+            c_save, c_clear = st.columns([1, 1])
+            _term_to_save = _active_edit if _active_edit else g_term
+            if c_save.button("Save", key="save_term", type="primary", use_container_width=True) and _term_to_save and g_defn:
+                persistence.update_glossary(_term_to_save, g_defn)
+                st.session_state["glossary_clear_form"] = True
+                st.session_state.pop("_active_edit_term", None)
+                st.session_state["glossary_edit_mode"] = False
+                st.rerun()
+            if c_clear.button("Clear", key="clear_term", use_container_width=True):
+                st.session_state["glossary_clear_form"] = True
+                st.session_state["glossary_edit_mode"] = True
+                st.session_state.pop("_active_edit_term", None)
+                st.rerun()
+
+        with st.expander(f"📋 Terms ({len(glossary)})", expanded=True):
+            if glossary:
+                g_search = st.text_input("Search", key="g_search", placeholder="Search terms…", label_visibility="collapsed")
+                filtered_glossary = {t: d for t, d in glossary.items() if not g_search or g_search.lower() in t.lower() or g_search.lower() in d.lower()}
+                pending = st.session_state.get("glossary_pending_delete")
+                for term, defn in filtered_glossary.items():
+                    c_text, c_edit, c_del = st.columns([6.5, 0.6, 0.6], gap="small")
+                    c_text.markdown(f"**{term}**: {defn}")
+                    if c_edit.button("✏", key=f"gedit_{term}", help="Edit"):
+                        st.session_state["_pending_edit_term"] = term
+                        st.session_state["_pending_edit_defn"] = defn
+                        st.rerun()
+                    if c_del.button("✕", key=f"gdel_{term}", help="Remove"):
+                        st.session_state["glossary_pending_delete"] = term
+                        st.rerun()
+                if pending and pending in glossary:
+                    st.warning(f"Remove **{pending}**?", icon="⚠️")
+                    c_yes, c_no = st.columns(2)
+                    if c_yes.button("Remove", key="g_confirm_del", type="primary"):
+                        persistence.delete_glossary_term(pending)
+                        st.session_state.pop("glossary_pending_delete", None)
+                        st.rerun()
+                    if c_no.button("Cancel", key="g_cancel_del"):
+                        st.session_state.pop("glossary_pending_delete", None)
+                        st.rerun()
+                if not filtered_glossary:
+                    st.caption("No matches.")
+            else:
+                st.caption("No glossary terms yet. Ask the agent to define a term.")
+
 
     # Saved queries panel
     st.markdown('<div class="sidebar-section">💾 Saved Queries</div>', unsafe_allow_html=True)

@@ -100,6 +100,13 @@ def update_glossary(term: str, definition: str) -> None:
     save("glossary.json", g)
 
 
+def delete_glossary_term(term: str) -> None:
+    g = dict(get_glossary())
+    g.pop(term, None)
+    _cache["glossary.json"] = g
+    save("glossary.json", g)
+
+
 def get_favorites() -> list:
     return _cached("favorites.json")
 
