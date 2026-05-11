@@ -39,6 +39,9 @@ class ReconciliationSkill(BaseSkill):
         from tools.reconciliation_tools import (
             run_reconciliation, get_reconciliation_detail, acknowledge_reconciliation_finding,
         )
+        run_reconciliation = run_reconciliation.func
+        get_reconciliation_detail = get_reconciliation_detail.func
+        acknowledge_reconciliation_finding = acknowledge_reconciliation_finding.func
         if input.action == "run_reconciliation":
             result = run_reconciliation(scope=input.scope, folder_filter=input.folder_filter)
         elif input.action == "get_detail":

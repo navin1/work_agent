@@ -130,7 +130,10 @@ class Kernel:
         response = await asyncio.to_thread(llm_with_tools.invoke, messages)
 
         if not getattr(response, "tool_calls", None):
-            return DispatchOutput(output=response.content or "", tool_calls=[])
+            content = response.content
+            if isinstance(content, list):
+                content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+            return DispatchOutput(output=content or "", tool_calls=[])
 
         tool_call = response.tool_calls[0]
         skill_name: str = tool_call["name"]

@@ -34,6 +34,8 @@ class SchemaSkill(BaseSkill):
 
     def _run(self, input: SchemaInput) -> ToolOutput:
         from tools.schema_tools import introspect_bq_schema, run_schema_audit
+        introspect_bq_schema = introspect_bq_schema.func
+        run_schema_audit = run_schema_audit.func
         if input.action == "introspect_bq_schema":
             result = introspect_bq_schema(
                 project_id=input.project_id or "",

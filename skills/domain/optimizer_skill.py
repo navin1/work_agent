@@ -47,6 +47,11 @@ class OptimizerSkill(BaseSkill):
             get_sql_flags, optimise_sql, optimise_dag,
             optimise_all_dag_sqls, optimise_sql_file,
         )
+        get_sql_flags = get_sql_flags.func
+        optimise_sql = optimise_sql.func
+        optimise_dag = optimise_dag.func
+        optimise_all_dag_sqls = optimise_all_dag_sqls.func
+        optimise_sql_file = optimise_sql_file.func
         env = self._resolve_env(input.composer_env)
 
         if input.action == "get_sql_flags":

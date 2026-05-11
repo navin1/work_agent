@@ -54,6 +54,9 @@ class MappingManagementSkill(BaseSkill):
             export_mapping_results,
             validate_mapping_folder,
         )
+        discover_mapping_files = discover_mapping_files.func
+        export_mapping_results = export_mapping_results.func
+        validate_mapping_folder = validate_mapping_folder.func
         if input.action == "discover_mapping_files":
             result = discover_mapping_files(
                 folder_path=input.folder_path,

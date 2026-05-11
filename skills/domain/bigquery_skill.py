@@ -39,6 +39,10 @@ class BigQuerySkill(BaseSkill):
         from tools.bigquery_tools import (
             query_bigquery, list_bq_datasets, list_bq_tables, get_bq_job_stats,
         )
+        query_bigquery = query_bigquery.func
+        list_bq_datasets = list_bq_datasets.func
+        list_bq_tables = list_bq_tables.func
+        get_bq_job_stats = get_bq_job_stats.func
         if input.action == "query_bigquery":
             result = query_bigquery(sql=input.sql or "", project_id=input.project_id)
         elif input.action == "list_datasets":

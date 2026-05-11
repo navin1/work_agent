@@ -34,6 +34,8 @@ class TestingSkill(BaseSkill):
 
     def _run(self, input: TestingInput) -> ToolOutput:
         from tools.testing_tools import compare_query_outputs, validate_optimisation
+        compare_query_outputs = compare_query_outputs.func
+        validate_optimisation = validate_optimisation.func
         if input.action == "compare_query_outputs":
             result = compare_query_outputs(
                 original_sql=input.original_sql,

@@ -137,8 +137,7 @@ if "js_registered" not in st.session_state:
 })();
 </script>
 """
-    import streamlit.components.v1 as components
-    components.html(_js_html, height=0, width=0)
+    st.iframe(_js_html, height=1)
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -294,7 +293,7 @@ if not st.session_state.messages:
     st.markdown(
         '<div style="text-align:center;padding:52px 0 20px;">'
         '<div style="font-size:36px;font-weight:800;color:#111827;letter-spacing:-0.02em;margin-bottom:10px;">'
-        'OSR Data Intelligence</div>'
+        'EDA OSR Helper</div>'
         '<div style="color:#6B7280;font-size:15px;max-width:520px;margin:0 auto;line-height:1.6;">'
         'Ask anything about your BigQuery tables, Composer DAGs, mapping sheets, schemas, or code.'
         '</div></div>',

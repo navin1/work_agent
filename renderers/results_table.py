@@ -200,7 +200,6 @@ def _fetch_task_sql(composer_env: str, dag_id: str, task_id: str, run_id: str) -
 
 
 def _render_task_content_panel(info: dict) -> None:
-    import streamlit.components.v1 as components
     from core import monaco
 
     st.divider()
@@ -248,7 +247,7 @@ def _render_task_content_panel(info: dict) -> None:
                 st.markdown("**Rendered SQL:**")
                 lines = sql.count("\n") + 1
                 h = min(max(300, lines * 22 + 60), 900)
-                components.html(monaco.editor(sql, language="sql", height=h), height=h + 20)
+                st.iframe(monaco.editor(sql, language="sql", height=h), height=h + 20)
                 st.download_button(
                     "⬇ Download SQL",
                     data=sql.encode("utf-8"),
@@ -320,7 +319,6 @@ def render_dag_list(raw_json: str) -> None:
 
 
 def render_task_sql(raw_json: str) -> None:
-    import streamlit.components.v1 as components
     from core import monaco
 
     try:
@@ -352,7 +350,7 @@ def render_task_sql(raw_json: str) -> None:
     # Cap at 900px so massive SQL doesn't inflate the page — Monaco scrolls internally.
     height = min(max(300, lines * 22 + 60), 900)
     st.caption(f"**{label}** — `{dag_id}` / `{task_id}`  ·  {lines:,} lines")
-    components.html(monaco.editor(sql, language="sql", height=height), height=height + 20)
+    st.iframe(monaco.editor(sql, language="sql", height=height), height=height + 20)
     st.download_button(
         "⬇ Download SQL",
         data=sql.encode("utf-8"),
@@ -363,7 +361,6 @@ def render_task_sql(raw_json: str) -> None:
 
 
 def render_dag_rendered_files(raw_json: str) -> None:
-    import streamlit.components.v1 as components
     from core import monaco
 
     try:
@@ -393,7 +390,7 @@ def render_dag_rendered_files(raw_json: str) -> None:
                 lines  = sql.count("\n") + 1
                 height = min(max(280, lines * 22 + 60), 900)
                 st.caption(f"{lines:,} lines")
-                components.html(monaco.editor(sql, language="sql", height=height), height=height + 20)
+                st.iframe(monaco.editor(sql, language="sql", height=height), height=height + 20)
                 st.download_button(
                     "⬇ Download SQL",
                     data=sql.encode("utf-8"),
@@ -520,7 +517,6 @@ def render_dag_task_graph(raw_json: str, is_history: bool = False) -> None:
 
 
 def render_dag_details(raw_json: str) -> None:
-    import streamlit.components.v1 as components
     from core import monaco
 
     try:
@@ -553,7 +549,7 @@ def render_dag_details(raw_json: str) -> None:
         with st.expander("DAG source", expanded=False):
             lines  = source.count("\n") + 1
             height = max(300, min(lines * 18 + 40, 800))
-            components.html(monaco.editor(source, language="python", height=height), height=height + 20)
+            st.iframe(monaco.editor(source, language="python", height=height), height=height + 20)
             st.download_button(
                 "⬇ Download DAG source",
                 data=source.encode("utf-8"),

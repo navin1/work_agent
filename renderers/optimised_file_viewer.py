@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from core import monaco
 
@@ -37,7 +36,7 @@ def render_file_content(raw_json: str) -> None:
     lang      = _EXT_LANG.get(ext, "plaintext")
 
     st.caption(f"`{file_path}` · {size:,} bytes")
-    components.html(
+    st.iframe(
         monaco.editor(content, language=lang, height=500),
         height=520,
     )
@@ -119,7 +118,7 @@ def render_optimised_file(raw_json: str) -> None:
         ))
         if diff_lines:
             diff_text = "".join(diff_lines)
-            components.html(
+            st.iframe(
                 monaco.editor(diff_text, language="diff", height=500),
                 height=520,
             )
@@ -148,13 +147,13 @@ def render_optimised_file(raw_json: str) -> None:
         col_a, col_b = st.columns(2)
         with col_a:
             st.markdown("**Original**")
-            components.html(
+            st.iframe(
                 monaco.editor(original, language=lang, height=500),
                 height=520,
             )
         with col_b:
             st.markdown("**Optimised**")
-            components.html(
+            st.iframe(
                 monaco.editor(optimised, language=lang, height=500),
                 height=520,
             )
@@ -324,7 +323,7 @@ def render_dag_suggestions(raw_json: str) -> None:
                 tofile="optimised",
             ))
             if diff_lines:
-                components.html(
+                st.iframe(
                     monaco.editor("".join(diff_lines), language="diff", height=500),
                     height=520,
                 )
@@ -335,13 +334,13 @@ def render_dag_suggestions(raw_json: str) -> None:
             col_a, col_b = st.columns(2)
             with col_a:
                 st.markdown("**Original**")
-                components.html(
+                st.iframe(
                     monaco.editor(original, language="python", height=500),
                     height=520,
                 )
             with col_b:
                 st.markdown("**Optimised**")
-                components.html(
+                st.iframe(
                     monaco.editor(optimised, language="python", height=500),
                     height=520,
                 )
@@ -505,7 +504,7 @@ def render_git_gcs_diff(raw_json: str) -> None:
                     st.caption(f"Size Δ: {sz_diff:+,} bytes")
                     diff_text = info.get("unified_diff", "")
                     if diff_text:
-                        components.html(
+                        st.iframe(
                             monaco.editor(diff_text, language="diff", height=300),
                             height=320,
                         )

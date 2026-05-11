@@ -55,6 +55,13 @@ class ExcelDataSkill(BaseSkill):
             reingest_excel_files, get_bq_table_for_mapping_file,
             get_dags_for_mapping_file, trace_from_excel,
         )
+        query_excel_data = query_excel_data.func
+        list_loaded_tables = list_loaded_tables.func
+        get_table_schema = get_table_schema.func
+        reingest_excel_files = reingest_excel_files.func
+        get_bq_table_for_mapping_file = get_bq_table_for_mapping_file.func
+        get_dags_for_mapping_file = get_dags_for_mapping_file.func
+        trace_from_excel = trace_from_excel.func
         if input.action == "query_excel_data":
             result = query_excel_data(sql=input.sql or "")
         elif input.action == "list_loaded_tables":

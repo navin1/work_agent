@@ -7,7 +7,6 @@ import json
 from datetime import datetime, timezone
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from core import monaco
 
@@ -340,7 +339,7 @@ def _render_content_panel(info: dict) -> None:
         if source and not source.startswith("# Error"):
             st.markdown("**DAG Source:**")
             h = min(max(300, source.count("\n") * 18 + 40), 800)
-            components.html(monaco.editor(source, language="python", height=h), height=h + 20)
+            st.iframe(monaco.editor(source, language="python", height=h), height=h + 20)
             st.download_button(
                 "⬇ Download DAG source",
                 data=source.encode("utf-8"),
@@ -367,7 +366,7 @@ def _render_content_panel(info: dict) -> None:
         if has_sql and info.get("sql"):
             st.markdown("**Rendered SQL:**")
             h = _sql_height(info["sql"])
-            components.html(monaco.editor(info["sql"], language="sql", height=h), height=h + 20)
+            st.iframe(monaco.editor(info["sql"], language="sql", height=h), height=h + 20)
             st.download_button(
                 "⬇ Download SQL",
                 data=info["sql"].encode("utf-8"),
@@ -391,7 +390,7 @@ def _render_content_panel(info: dict) -> None:
         st.caption(f"DAG: {info['dag_id']}")
         if info.get("sql"):
             h = _sql_height(info["sql"])
-            components.html(monaco.editor(info["sql"], language="sql", height=h), height=h + 20)
+            st.iframe(monaco.editor(info["sql"], language="sql", height=h), height=h + 20)
             st.download_button(
                 "⬇ Download SQL",
                 data=info["sql"].encode("utf-8"),

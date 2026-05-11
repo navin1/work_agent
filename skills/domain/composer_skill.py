@@ -68,6 +68,18 @@ class ComposerSkill(BaseSkill):
             get_error_logs, get_execution_log, list_airflow_jobs,
             get_dag_task_graph, get_dag_snapshot_diff,
         )
+        list_composers = list_composers.func
+        list_dags = list_dags.func
+        get_dag_details = get_dag_details.func
+        get_dag_rendered_files = get_dag_rendered_files.func
+        get_dag_run_history = get_dag_run_history.func
+        get_task_sql = get_task_sql.func
+        get_task_performance = get_task_performance.func
+        get_error_logs = get_error_logs.func
+        get_execution_log = get_execution_log.func
+        list_airflow_jobs = list_airflow_jobs.func
+        get_dag_task_graph = get_dag_task_graph.func
+        get_dag_snapshot_diff = get_dag_snapshot_diff.func
         env = self._resolve_env(input.composer_env)
 
         if input.action == "list_composers":

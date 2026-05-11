@@ -2,7 +2,6 @@
 import json
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from core import monaco
 
@@ -56,4 +55,4 @@ def render(raw_json: str) -> None:
 
     with tab3:
         json_str = json.dumps(data, indent=2, default=str)
-        components.html(monaco.editor(json_str, language="json", height=400), height=420)
+        st.iframe(monaco.editor(json_str, language="json", height=400), height=420)

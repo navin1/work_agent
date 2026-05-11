@@ -7,7 +7,6 @@ import json
 import io
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from core import monaco
 
@@ -165,7 +164,7 @@ def render_file_browser(raw_json: str) -> None:
         lang   = _lang(file_name)
         lines  = content.count("\n") + 1
         height = min(max(300, lines * 18 + 40), 900)
-        components.html(monaco.editor(content, language=lang, height=height), height=height + 20)
+        st.iframe(monaco.editor(content, language=lang, height=height), height=height + 20)
 
     _safe_key = selected_item["path"].replace("/", "_")
 

@@ -63,6 +63,13 @@ class UserSkill(BaseSkill):
             save_query, get_saved_queries, update_glossary, get_glossary,
             pin_workspace, save_favorite, get_favorites,
         )
+        save_query = save_query.func
+        get_saved_queries = get_saved_queries.func
+        update_glossary = update_glossary.func
+        get_glossary = get_glossary.func
+        pin_workspace = pin_workspace.func
+        save_favorite = save_favorite.func
+        get_favorites = get_favorites.func
         if input.action == "save_query":
             result = save_query(
                 name=input.name or "",

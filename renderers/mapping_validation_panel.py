@@ -4,7 +4,6 @@ import json
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from core import monaco
 
@@ -264,7 +263,7 @@ def _render_bq_groups(groups: list, file_label: str, uid: str, reviewed_key: str
                     evidence = (rule.get("evidence") or "").strip()
                     if evidence:
                         h = min(max(120, evidence.count("\n") * 20 + 80), 500)
-                        components.html(
+                        st.iframe(
                             monaco.editor(evidence, language="sql", height=h), height=h + 20
                         )
                     else:
@@ -308,7 +307,7 @@ def _render_bq_groups(groups: list, file_label: str, uid: str, reviewed_key: str
                 with tab_raw:
                     raw_str = json.dumps(rule, indent=2, default=str)
                     h = min(max(200, raw_str.count("\n") * 18), 500)
-                    components.html(
+                    st.iframe(
                         monaco.editor(raw_str, language="json", height=h), height=h + 20
                     )
 

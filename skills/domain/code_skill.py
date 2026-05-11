@@ -35,6 +35,9 @@ class CodeSkill(BaseSkill):
 
     def _run(self, input: CodeInput) -> ToolOutput:
         from tools.code_tools import compare_git_gcs, optimise_file, optimise_folder
+        compare_git_gcs = compare_git_gcs.func
+        optimise_file = optimise_file.func
+        optimise_folder = optimise_folder.func
         env = self._resolve_env(input.composer_env)
 
         if input.action == "compare_git_gcs":

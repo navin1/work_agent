@@ -34,6 +34,9 @@ class BrowseSkill(BaseSkill):
     def _run(self, input: BrowseInput) -> ToolOutput:
         from tools.browse_tools import browse_gcs, browse_git
         from tools.code_tools import read_file
+        browse_gcs = browse_gcs.func
+        browse_git = browse_git.func
+        read_file = read_file.func
 
         if input.action == "browse_gcs":
             result = browse_gcs(path=input.path)

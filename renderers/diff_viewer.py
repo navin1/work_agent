@@ -3,7 +3,6 @@ import json
 import zipfile
 import io
 import streamlit as st
-import streamlit.components.v1 as components
 
 from core import monaco, sql_formatter
 from core.audit import log_audit
@@ -49,7 +48,7 @@ def render(raw_json: str) -> None:
     fmt_orig = sql_formatter.format_sql(original_sql)
     fmt_opt = sql_formatter.format_sql(optimised_sql)
     diff_html = monaco.diff_editor(fmt_orig, fmt_opt, language="sql", height=480)
-    components.html(diff_html, height=500)
+    st.iframe(diff_html, height=500)
 
     # Change explanation cards
     if changes:
@@ -63,10 +62,10 @@ def render(raw_json: str) -> None:
                 c1, c2 = st.columns(2)
                 with c1:
                     st.caption("Original")
-                    components.html(monaco.editor(ch.get("original_snippet", ""), "sql", 120), height=140)
+                    st.iframe(monaco.editor(ch.get("original_snippet", ""), "sql", 120), height=140)
                 with c2:
                     st.caption("Optimised")
-                    components.html(monaco.editor(ch.get("optimised_snippet", ""), "sql", 120), height=140)
+                    st.iframe(monaco.editor(ch.get("optimised_snippet", ""), "sql", 120), height=140)
 
     # Action buttons
     col1, col2, col3 = st.columns([1, 1, 1])

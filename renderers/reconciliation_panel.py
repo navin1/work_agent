@@ -2,7 +2,6 @@
 import json
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from core import monaco
 
@@ -93,7 +92,7 @@ def render(raw_json: str, agent=None) -> None:
                         detail = json.loads(detail_raw)
                         diff_text = detail.get("content_diff", "(no diff available)")
                         if diff_text:
-                            components.html(monaco.editor(diff_text, "plaintext", 300), height=320)
+                            st.iframe(monaco.editor(diff_text, "plaintext", 300), height=320)
                         else:
                             st.info("No content difference.")
                     except Exception:
@@ -114,7 +113,7 @@ def render(raw_json: str, agent=None) -> None:
                 with tab_raw:
                     try:
                         detail = json.loads(detail_raw)
-                        components.html(monaco.editor(json.dumps(detail, indent=2, default=str), "json", 350), height=370)
+                        st.iframe(monaco.editor(json.dumps(detail, indent=2, default=str), "json", 350), height=370)
                     except Exception:
                         st.write(detail_raw)
 
