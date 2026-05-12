@@ -1965,15 +1965,25 @@ def _discover_and_stage_excel_files(
 
     # ── Local folder ─────────────────────────────────────────────────────────
     if folder_path:
-        src = Path(folder_path)
+        src = Path(folder_path).resolve()
         if not src.is_dir():
             warnings.append(f"folder_path '{folder_path}' does not exist or is not a directory.")
             return staged, warnings
-        for f in src.glob("*.xlsx"):
-            dest = mapping_dir / f.name
-            if not dest.exists() or f.stat().st_mtime > dest.stat().st_mtime:
-                shutil.copy2(f, dest)
-            staged.append(dest)
+        _data_root = data_root.resolve()
+        for f in src.rglob("*.xlsx"):
+            f_abs = f.resolve()
+            try:
+                f_abs.relative_to(_data_root)
+                in_data_tree = True
+            except ValueError:
+                in_data_tree = False
+            if in_data_tree:
+                staged.append(f_abs)
+            else:
+                dest = mapping_dir / f.name
+                if not dest.exists() or f.stat().st_mtime > dest.stat().st_mtime:
+                    shutil.copy2(f, dest)
+                staged.append(dest)
 
     # ── GCS path  gs://bucket/prefix/ ────────────────────────────────────────
     elif gcs_path:
