@@ -11,11 +11,12 @@ from base import BaseSkill, ToolOutput, BaseInput
 
 class BrowseInput(BaseInput):
     """Browse folders or read individual files from GCS buckets, Git repositories, or local paths."""
-    action: Literal["browse_gcs", "browse_git", "read_file"] = Field(
+    action: Literal["browse_gcs", "browse_git", "browse_local", "read_file"] = Field(
         ...,
         description=(
             "browse_gcs: list files at a GCS path (gs://bucket/prefix); "
             "browse_git: list files in a Git repo path; "
+            "browse_local: list files at a local filesystem path (absolute or relative); "
             "read_file: read the full content of a file (local, gs://, or Git path)."
         ),
     )
@@ -32,16 +33,19 @@ class BrowseSkill(BaseSkill):
         return await asyncio.to_thread(self._run, input)
 
     def _run(self, input: BrowseInput) -> ToolOutput:
-        from tools.browse_tools import browse_gcs, browse_git
+        from tools.browse_tools import browse_gcs, browse_git, browse_local
         from tools.code_tools import read_file
         browse_gcs = browse_gcs.func
         browse_git = browse_git.func
+        browse_local = browse_local.func
         read_file = read_file.func
 
         if input.action == "browse_gcs":
             result = browse_gcs(path=input.path)
         elif input.action == "browse_git":
             result = browse_git(path=input.path)
+        elif input.action == "browse_local":
+            result = browse_local(path=input.path)
         else:
             result = read_file(file_path=input.path)
         return ToolOutput(result=result)

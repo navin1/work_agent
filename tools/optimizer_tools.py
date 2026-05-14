@@ -689,18 +689,21 @@ def optimise_sql_file(file_path: str, composer_env: str = None) -> str:
             except Exception as e:
                 return json.dumps({"error": f"Failed to read GCS file: {e}"})
 
-        # Git/local path
+        # Local filesystem (absolute paths checked first to avoid spurious GitHub calls)
+        if sql is None:
+            local = Path(file_path)
+            if local.is_absolute() or file_path.startswith("./") or file_path.startswith("../"):
+                if local.exists():
+                    sql = local.read_text(encoding="utf-8")
+            elif local.exists():
+                sql = local.read_text(encoding="utf-8")
+
+        # Git path fallback
         if sql is None:
             try:
                 sql = _fetch_file_from_git(file_path)
             except Exception:
                 pass
-
-        # Local filesystem fallback
-        if sql is None:
-            local = Path(file_path)
-            if local.exists():
-                sql = local.read_text(encoding="utf-8")
 
         if not sql:
             return json.dumps({"error": f"Could not read SQL file: {file_path}"})

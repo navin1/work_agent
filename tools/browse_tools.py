@@ -2,6 +2,7 @@
 import json
 import base64
 import time
+from pathlib import Path
 
 from langchain.tools import tool
 from core import config
@@ -147,6 +148,42 @@ def browse_git(path: str) -> str:
             "display_path": f"{config.GIT_REPO}/{clean_path}@{config.GIT_BRANCH}",
             "items":        items,
         })
+    except Exception as exc:
+        return safe_json({"error": str(exc)})
+
+
+@tool
+def browse_local(path: str) -> str:
+    """List files and sub-folders at a local filesystem path.
+
+    path: absolute or relative local path like '/Users/foo/sql/' or './dags/'.
+    Returns a file listing with name, size, and type for each entry.
+    The agent should call this when the user asks to list or browse files at a local path."""
+    import os
+    start = time.time()
+    try:
+        local = Path(path).expanduser().resolve()
+        if not local.exists():
+            return safe_json({"error": f"Path does not exist: {path}"})
+        if local.is_file():
+            return safe_json({
+                "source": "local",
+                "path": str(local),
+                "items": [{"name": local.name, "path": str(local), "type": "file",
+                            "size": local.stat().st_size}],
+            })
+        items = []
+        for entry in sorted(local.iterdir(), key=lambda e: (0 if e.is_dir() else 1, e.name.lower())):
+            items.append({
+                "name": entry.name,
+                "path": str(entry),
+                "type": "dir" if entry.is_dir() else "file",
+                "size": entry.stat().st_size if entry.is_file() else None,
+            })
+        log_audit("browse_tools", "local", path,
+                  row_count=len(items),
+                  duration_ms=int((time.time() - start) * 1000))
+        return safe_json({"source": "local", "path": str(local), "items": items})
     except Exception as exc:
         return safe_json({"error": str(exc)})
 
